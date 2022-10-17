@@ -1,6 +1,4 @@
 defmodule HLS.Storage.FS do
-  @behaviour HLS.Storage
-
   @enforce_keys [:location]
   defstruct @enforce_keys ++ [:dirname, :basename]
 

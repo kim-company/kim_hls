@@ -1,6 +1,4 @@
 defmodule HLS.Storage.HTTP do
-  @behaviour HLS.Storage
-
   @enforce_keys [:url]
   defstruct @enforce_keys ++ [:client, follow_redirects?: false]
 
