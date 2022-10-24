@@ -22,7 +22,7 @@ defmodule HLS.MixProject do
   defp deps do
     [
       {:tesla, "~> 1.4"},
-      {:hackney, "~> 1.17"}
+      {:hackney, "~> 1.18"}
     ]
   end
 end

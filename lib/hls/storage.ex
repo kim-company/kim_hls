@@ -19,6 +19,8 @@ defmodule HLS.Storage do
   @callback get(state_t) :: callback_result_t
   @callback get(state_t, URI.t()) :: callback_result_t
 
+  @callback ready?(state_t) :: boolean()
+
   @opaque t :: %__MODULE__{adapter: module, state: any}
   defstruct [:adapter, :state]
 
@@ -72,4 +74,7 @@ defmodule HLS.Storage do
     {:ok, content} = storage.adapter.get(storage.state, uri)
     content
   end
+
+  @spec ready?(t) :: boolean()
+  def ready?(storage), do: storage.adapter.ready?(storage.state)
 end

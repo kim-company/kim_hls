@@ -76,6 +76,9 @@ defmodule HLS.Playlist.Media.TrackerTest do
 
       {:ok, Enum.join([header] ++ segs ++ [tail], "\n")}
     end
+
+    @impl true
+    def ready?(_), do: true
   end
 
   describe "tracker process" do

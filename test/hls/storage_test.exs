@@ -53,4 +53,15 @@ defmodule HLS.StorageTest do
       assert seen == 10
     end
   end
+
+  describe "ready?/1" do
+    test "returns false when location is invalid" do
+      store = Storage.new(%FS{location: "invalid location"})
+      refute Storage.ready?(store)
+    end
+
+    test "returns true when the location exists" do
+      assert Storage.ready?(@store)
+    end
+  end
 end
