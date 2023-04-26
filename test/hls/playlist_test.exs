@@ -1,10 +1,45 @@
 defmodule HLS.PlaylistTest do
   use ExUnit.Case
 
-  alias HLS.Playlist
+  alias HLS.{Playlist, VariantStream, AlternativeRendition, Segment}
   alias HLS.Playlist.{Master, Media}
-  alias HLS.VariantStream
-  alias HLS.AlternativeRendition
+
+  describe "Marshal Media Playlist" do
+    segments = [
+      %Segment{
+        duration: 3.0,
+        uri: URI.parse("a.ts")
+      },
+      %Segment{
+        duration: 2.0,
+        uri: URI.parse("b.ts")
+      }
+    ]
+
+    playlist =
+      Media.add_segments(
+        %Media{
+          version: 7,
+          target_segment_duration: 3.0,
+          media_sequence_number: 0,
+          finished: false
+        },
+        segments
+      )
+
+    marshaled = """
+      #EXTM3U
+      #EXT-X-VERSION:7
+      #EXT-X-TARGETDURATION:3
+      #EXT-X-MEDIA-SEQUENCE:0
+      #EXTINF:3.0,
+      a.ts
+      #EXTINF:2.0,
+      b.ts
+    """
+
+    assert Playlist.marshal(playlist) == String.replace(marshaled, " ", "", global: true)
+  end
 
   describe "Unmarshal Master Playlist" do
     test "fails with empty content" do

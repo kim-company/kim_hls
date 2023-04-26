@@ -124,6 +124,10 @@ defmodule HLS.Playlist.Tag do
     |> then(&Enum.join(["#", &1]))
   end
 
+  def marshal(tag, value) do
+    marshal_id(tag.id()) <> ":" <> to_string(value)
+  end
+
   @spec capture_attribute_list!(
           String.t(),
           tag_id_t(),

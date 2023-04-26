@@ -3,7 +3,7 @@ defmodule HLS.Playlist do
   HLS Playlist parses based on RFC 8216.
   """
 
-  alias HLS.Playlist.Unmarshaler
+  alias HLS.Playlist.{Unmarshaler, Marshaler}
 
   @doc """
   Given a valid playlist file and a playlist module implementation, returns the
@@ -59,5 +59,9 @@ defmodule HLS.Playlist do
 
   def unmarshal(data, _playlist) do
     raise ArgumentError, "Input data is not a valid M3U file: #{inspect(data)}"
+  end
+
+  def marshal(playlist) do
+    Marshaler.marshal(playlist)
   end
 end

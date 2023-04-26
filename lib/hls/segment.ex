@@ -1,15 +1,15 @@
 defmodule HLS.Segment do
   alias HLS.Playlist.Tag
 
-  @enforce_keys [:uri, :duration, :relative_sequence]
   @type t :: %__MODULE__{
           uri: URI.t(),
+          # Expressed in seconds.
           duration: float(),
           relative_sequence: pos_integer(),
-          absolute_sequence: pos_integer()
+          absolute_sequence: pos_integer() | nil
         }
 
-  defstruct @enforce_keys ++ [:absolute_sequence]
+  defstruct [:uri, :duration, :relative_sequence, :absolute_sequence]
 
   @spec from_tags([Tag.t()]) :: t()
   def from_tags(tags) do
