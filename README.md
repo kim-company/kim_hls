@@ -18,6 +18,9 @@ def deps do
 end
 ```
 
+Note that this library uses Tesla, you are responsible for choosing and
+configuring its adapter.
+
 ## Gotchas
 ### On LFS (if tests are failing
 Beware that fixtures are stored using the git LFS protocol. On debian, set it up

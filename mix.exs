@@ -21,8 +21,7 @@ defmodule HLS.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:tesla, "~> 1.4"},
-      {:hackney, "~> 1.18"}
+      {:tesla, "~> 1.4"}
     ]
   end
 end
