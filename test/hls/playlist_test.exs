@@ -9,8 +9,8 @@ defmodule HLS.PlaylistTest do
   describe "Unmarshal Master Playlist" do
     test "fails with empty content" do
       [
-        fn -> Playlist.unmarshal("", Master) end,
-        fn -> Playlist.unmarshal("some invalid content", Master) end
+        fn -> Playlist.unmarshal("", %Master{}) end,
+        fn -> Playlist.unmarshal("some invalid content", %Master{}) end
       ]
       |> Enum.each(fn t -> assert_raise ArgumentError, t end)
     end
@@ -23,7 +23,7 @@ defmodule HLS.PlaylistTest do
       #EXT-X-VERSION:#{version}
       """
 
-      manifest = Playlist.unmarshal(content, Master)
+      manifest = Playlist.unmarshal(content, %Master{})
       assert manifest.version == version
     end
 
@@ -39,7 +39,7 @@ defmodule HLS.PlaylistTest do
       muxed_video_720x480.m3u8
       """
 
-      manifest = Playlist.unmarshal(content, Master)
+      manifest = Playlist.unmarshal(content, %Master{})
       assert Enum.count(Master.variant_streams(manifest)) == 3
     end
 
@@ -51,7 +51,7 @@ defmodule HLS.PlaylistTest do
       stream_854x480.m3u8
       """
 
-      manifest = Playlist.unmarshal(content, Master)
+      manifest = Playlist.unmarshal(content, %Master{})
       assert %VariantStream{} = stream = List.first(Master.variant_streams(manifest))
 
       [
@@ -78,7 +78,7 @@ defmodule HLS.PlaylistTest do
       stream_with_token.m3u8?t=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE2NTc5MTYzMDcsImlhdCI6MTY1Nzg3MzEwNywiaXNzIjoiY2RwIiwia2VlcF9zZWdtZW50cyI6bnVsbCwia2luZCI6ImNoaWxkIiwicGFyZW50IjoiNmhReUhyUGRhRTNuL3N0cmVhbS5tM3U4Iiwic3ViIjoiNmhReUhyUGRhRTNuL3N0cmVhbV82NDB4MzYwXzgwMGsubTN1OCIsInRyaW1fZnJvbSI6NTIxLCJ0cmltX3RvIjpudWxsLCJ1c2VyX2lkIjoiMzA2IiwidXVpZCI6bnVsbCwidmlzaXRvcl9pZCI6ImI0NGFlZjYyLTA0MTYtMTFlZC04NTRmLTBhNThhOWZlYWMwMiJ9.eVrBzEBbjHxDcg6xnZXfXy0ZoNoj_seaZwaja_WDwuc
       """
 
-      manifest = Playlist.unmarshal(content, Master)
+      manifest = Playlist.unmarshal(content, %Master{})
       stream = List.first(Master.variant_streams(manifest))
 
       assert stream.uri == %URI{
@@ -97,7 +97,7 @@ defmodule HLS.PlaylistTest do
       stream_854x480.m3u8
       """
 
-      manifest = Playlist.unmarshal(content, Master)
+      manifest = Playlist.unmarshal(content, %Master{})
       stream = List.first(Master.variant_streams(manifest))
 
       assert [%AlternativeRendition{} = rendition] =
@@ -125,8 +125,8 @@ defmodule HLS.PlaylistTest do
   describe "Unmarshal Media Playlist" do
     test "fails with empty content" do
       [
-        fn -> Playlist.unmarshal("", Media) end,
-        fn -> Playlist.unmarshal("some invalid content", Media) end
+        fn -> Playlist.unmarshal("", %Media{}) end,
+        fn -> Playlist.unmarshal("some invalid content", %Media{}) end
       ]
       |> Enum.each(fn t -> assert_raise ArgumentError, t end)
     end
@@ -147,7 +147,7 @@ defmodule HLS.PlaylistTest do
       a/stream_1280x720/00000/stream_1280x720_00663.ts?t=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE2NTgwMjYwMjIsImlhdCI6MTY1Nzk2NzgyMiwiaXNzIjoiY2RwIiwic3ViIjoiZzM5azZLSjNLZ1UwL2Evc3RyZWFtXzEyODB4NzIwIiwidXNlcl9pZCI6IjEiLCJ2aXNpdG9yX2lkIjoiM2FhNjY1MGEtMDRmMy0xMWVkLWIzOGYtMGE1OGE5ZmVhYzAyIn0.DNMBbZPLE0yc0GnGjV5hG_eX_uQ5hzriLk0ZPe8w2AI
       """
 
-      manifest = Playlist.unmarshal(content, Media)
+      manifest = Playlist.unmarshal(content, %Media{})
       assert manifest.version == version
       assert manifest.target_segment_duration == duration
       assert manifest.media_sequence_number == sequence
@@ -172,7 +172,7 @@ defmodule HLS.PlaylistTest do
       audio_segment_4_audio_track.m4s
       """
 
-      manifest = Playlist.unmarshal(content, Media)
+      manifest = Playlist.unmarshal(content, %Media{})
       assert Enum.count(Media.segments(manifest)) == 5
     end
 
@@ -189,7 +189,7 @@ defmodule HLS.PlaylistTest do
       #EXT-X-ENDLIST
       """
 
-      manifest = Playlist.unmarshal(content, Media)
+      manifest = Playlist.unmarshal(content, %Media{})
       assert manifest.finished
     end
 
@@ -205,7 +205,7 @@ defmodule HLS.PlaylistTest do
       a/stream_1280x720_3300k/00000/stream_1280x720_3300k_00522.ts?t=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE2NTc5MTYzMDEsImlhdCI6MTY1Nzg3MzEwMSwiaXNzIjoiY2RwIiwic3ViIjoiNmhReUhyUGRhRTNuL2Evc3RyZWFtXzEyODB4NzIwXzMzMDBrIiwidXNlcl9pZCI6IjMwNiIsInZpc2l0b3JfaWQiOiJiMGMyMGVkZS0wNDE2LTExZWQtYTYyMS0wYTU4YTlmZWFjMDIifQ.Fj7CADyZeoWtpaqiZLPodNHMWhlGeKjxLwpMR7lygqk
       """
 
-      manifest = Playlist.unmarshal(content, Media)
+      manifest = Playlist.unmarshal(content, %Media{})
       last = List.last(Media.segments(manifest))
       assert last.duration == 2.020136054
       assert last.uri.path == "a/stream_1280x720_3300k/00000/stream_1280x720_3300k_00522.ts"

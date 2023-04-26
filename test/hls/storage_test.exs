@@ -7,11 +7,11 @@ defmodule HLS.StorageTest do
   alias HLS.Playlist.Media
 
   @master_playlist_path "./test/fixtures/mpeg-ts/stream.m3u8"
-  @store Storage.new(%FS{location: @master_playlist_path})
+  @store Storage.new(@master_playlist_path)
 
   describe "Load playlist from disk" do
     test "fails when manifest location is invalid" do
-      store = Storage.new(%FS{location: "invalid location"})
+      store = %Storage{driver: FS.new("invalid location")}
       assert {:error, _reason} = Storage.get_master_playlist(store)
     end
 
@@ -56,7 +56,7 @@ defmodule HLS.StorageTest do
 
   describe "ready?/1" do
     test "returns false when location is invalid" do
-      store = Storage.new(%FS{location: "invalid location"})
+      store = %Storage{driver: FS.new("invalid location")}
       refute Storage.ready?(store)
     end
 

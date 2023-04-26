@@ -4,82 +4,10 @@ defmodule HLS.Playlist.Media.TrackerTest do
   alias HLS.Playlist.Media.Tracker
   alias HLS.Segment
   alias HLS.Storage
-  alias HLS.Storage.FS
+  alias Support.OneMoreMediaStorage
 
   @master_playlist_path "./test/fixtures/mpeg-ts/stream.m3u8"
-  @store Storage.new(%FS{location: @master_playlist_path})
-
-  defmodule OneMoreMediaStorage do
-    @behaviour HLS.Storage
-
-    @media_track_path "one_more.m3u8"
-
-    defstruct [:initial, max: 1, target_duration: 1]
-
-    @impl true
-    def init(config) do
-      {:ok, pid} =
-        Agent.start(fn ->
-          %{
-            initial: config.initial,
-            max: config.max,
-            calls: 0,
-            target_duration: config.target_duration
-          }
-        end)
-
-      pid
-    end
-
-    @impl true
-    def get(_) do
-      {:ok,
-       """
-       #EXTM3U
-       #EXT-X-VERSION:7
-       #EXT-X-INDEPENDENT-SEGMENTS
-       #EXT-X-STREAM-INF:BANDWIDTH=725435,CODECS="avc1.42e00a"
-       #{@media_track_path}
-       """}
-    end
-
-    @impl true
-    def get(pid, %URI{path: @media_track_path}) do
-      config =
-        Agent.get_and_update(pid, fn state ->
-          {state, %{state | calls: state.calls + 1}}
-        end)
-
-      header = """
-      #EXTM3U
-      #EXT-X-VERSION:7
-      #EXT-X-TARGETDURATION:#{config.target_duration}
-      #EXT-X-MEDIA-SEQUENCE:0
-      """
-
-      calls = config.calls
-
-      segs =
-        Enum.map(Range.new(0, calls + config.initial), fn seq ->
-          """
-          #EXTINF:0.89,
-          video_segment_#{seq}_video_720x480.ts
-          """
-        end)
-
-      tail =
-        if calls == config.max do
-          "#EXT-X-ENDLIST"
-        else
-          ""
-        end
-
-      {:ok, Enum.join([header] ++ segs ++ [tail], "\n")}
-    end
-
-    @impl true
-    def ready?(_), do: true
-  end
+  @store Storage.new(@master_playlist_path)
 
   describe "tracker process" do
     test "starts and exits on demand" do
@@ -123,7 +51,7 @@ defmodule HLS.Playlist.Media.TrackerTest do
     end
 
     test "keeps on sending updates when the playlist does" do
-      store = Storage.new(%OneMoreMediaStorage{initial: 1, target_duration: 1})
+      store = %Storage{driver: OneMoreMediaStorage.new(initial: 1, target_duration: 1)}
       {:ok, pid} = Tracker.start_link(store)
       ref = Tracker.follow(pid, URI.parse("one_more.m3u8"))
 
@@ -142,7 +70,7 @@ defmodule HLS.Playlist.Media.TrackerTest do
     end
 
     test "when the playlist is not finished, it does not deliver more than 3 packets at first" do
-      store = Storage.new(%OneMoreMediaStorage{initial: 4, target_duration: 1})
+      store = %Storage{driver: OneMoreMediaStorage.new(initial: 4, target_duration: 1)}
       {:ok, pid} = Tracker.start_link(store)
       ref = Tracker.follow(pid, URI.parse("one_more.m3u8"))
 

@@ -2,8 +2,6 @@ defmodule HLS.Playlist.Media do
   alias HLS.Playlist.Tag
   alias HLS.Segment
 
-  @behaviour HLS.Playlist
-
   @type t :: %__MODULE__{
           tags: Playlist.tag_map_t(),
           version: pos_integer(),
@@ -22,8 +20,28 @@ defmodule HLS.Playlist.Media do
     segments: []
   ]
 
+  @spec segments(t) :: [Segment.t()]
+  def segments(%__MODULE__{segments: segs}), do: segs
+end
+
+defimpl HLS.Playlist.Unmarshaler, for: HLS.Playlist.Media do
+  alias HLS.Playlist.Tag
+  alias HLS.Segment
+
   @impl true
-  def init(tags) do
+  def supported_tags(_) do
+    [
+      Tag.Version,
+      Tag.TargetSegmentDuration,
+      Tag.MediaSequenceNumber,
+      Tag.EndList,
+      Tag.Inf,
+      Tag.SegmentURI
+    ]
+  end
+
+  @impl true
+  def load_tags(playlist, tags) do
     [version] = Map.fetch!(tags, Tag.Version.id())
     [segment_duration] = Map.fetch!(tags, Tag.TargetSegmentDuration.id())
     [sequence_number] = Map.fetch!(tags, Tag.MediaSequenceNumber.id())
@@ -45,28 +63,14 @@ defmodule HLS.Playlist.Media do
       |> Enum.sort()
       |> Enum.map(fn {_, val} -> Segment.from_tags(val) end)
 
-    %__MODULE__{
-      tags: tags,
-      version: version.value,
-      target_segment_duration: segment_duration.value,
-      media_sequence_number: sequence_number.value,
-      finished: finished,
-      segments: segments
+    %HLS.Playlist.Media{
+      playlist
+      | tags: tags,
+        version: version.value,
+        target_segment_duration: segment_duration.value,
+        media_sequence_number: sequence_number.value,
+        finished: finished,
+        segments: segments
     }
   end
-
-  @impl true
-  def supported_tags() do
-    [
-      Tag.Version,
-      Tag.TargetSegmentDuration,
-      Tag.MediaSequenceNumber,
-      Tag.EndList,
-      Tag.Inf,
-      Tag.SegmentURI
-    ]
-  end
-
-  @spec segments(t) :: [Segment.t()]
-  def segments(%__MODULE__{segments: segs}), do: segs
 end

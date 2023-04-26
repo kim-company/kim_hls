@@ -1,11 +1,7 @@
 defmodule HLS.Storage.HTTP do
-  @behaviour HLS.Storage
+  defstruct [:url, :client, follow_redirects?: false]
 
-  @enforce_keys [:url]
-  defstruct @enforce_keys ++ [:client, follow_redirects?: false]
-
-  @impl true
-  def init(config = %__MODULE__{url: url} = config) do
+  def new(url, follow_redirects? \\ false) do
     uri = URI.parse(url)
     base_url = "#{uri.scheme}://#{uri.authority}#{Path.dirname(uri.path)}"
 
@@ -23,31 +19,33 @@ defmodule HLS.Storage.HTTP do
     ]
 
     middleware =
-      if config.follow_redirects? do
+      if follow_redirects? do
         middleware ++ [Tesla.Middleware.FollowRedirects]
       else
         middleware
       end
 
-    %__MODULE__{config | client: Tesla.client(middleware)}
+    %__MODULE__{client: Tesla.client(middleware), url: url, follow_redirects?: follow_redirects?}
   end
+end
 
+defimpl HLS.Storage.Driver, for: HLS.Storage.HTTP do
   @impl true
-  def get(%__MODULE__{client: client, url: url}) do
+  def get(%HLS.Storage.HTTP{client: client, url: url}) do
     client
     |> Tesla.get(url)
     |> handle_response()
   end
 
   @impl true
-  def get(%__MODULE__{client: client}, uri) do
+  def get(%HLS.Storage.HTTP{client: client}, uri) do
     client
     |> Tesla.get(uri.path, query: decode_query(uri.query))
     |> handle_response()
   end
 
   @impl true
-  def ready?(%__MODULE__{url: url} = config) do
+  def ready?(%HLS.Storage.HTTP{url: url} = config) do
     middleware = if config.follow_redirects?, do: [Tesla.Middleware.FollowRedirects], else: []
     client = Tesla.client(middleware)
 

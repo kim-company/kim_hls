@@ -1,24 +1,22 @@
 defmodule HLS.Storage.FS do
-  @behaviour HLS.Storage
+  defstruct [:location, :dirname, :basename]
 
-  @enforce_keys [:location]
-  defstruct @enforce_keys ++ [:dirname, :basename]
-
-  @impl true
-  def init(config = %__MODULE__{location: location}) do
+  def new(location) do
     basename = Path.basename(location)
     dirname = Path.dirname(location)
-    %__MODULE__{config | basename: basename, dirname: dirname}
+    %__MODULE__{basename: basename, dirname: dirname}
   end
+end
+
+defimpl HLS.Storage.Driver, for: HLS.Storage.FS do
+  @impl true
+  def get(%HLS.Storage.FS{dirname: dir, basename: manifest}), do: load([dir, manifest])
 
   @impl true
-  def get(%__MODULE__{dirname: dir, basename: manifest}), do: load([dir, manifest])
+  def get(%HLS.Storage.FS{dirname: dir}, %URI{path: rel}), do: load([dir, rel])
 
   @impl true
-  def get(%__MODULE__{dirname: dir}, %URI{path: rel}), do: load([dir, rel])
-
-  @impl true
-  def ready?(%__MODULE__{dirname: dir, basename: manifest}) do
+  def ready?(%HLS.Storage.FS{dirname: dir, basename: manifest}) do
     dir
     |> Path.join(manifest)
     |> File.exists?()

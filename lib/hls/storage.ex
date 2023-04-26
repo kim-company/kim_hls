@@ -1,49 +1,23 @@
 defmodule HLS.Storage do
   alias HLS.Playlist
-  alias HLS.Playlist.Master
-  alias HLS.Playlist.Media
+  alias HLS.Playlist.{Master, Media}
+  alias HLS.Storage.Driver
 
-  @type config_t :: struct
-  @type state_t :: any
-
-  @type content_t :: String.t() | binary()
-  @type ok_t :: {:ok, content_t}
-  @type error_t :: {:error, any}
-  @type callback_result_t :: ok_t | error_t
-
-  @doc """
-  Generates the loader state based on the configuration struct.
-  """
-  @callback init(config_t) :: state_t
-
-  @callback get(state_t) :: callback_result_t
-  @callback get(state_t, URI.t()) :: callback_result_t
-
-  @callback ready?(state_t) :: boolean()
-
-  @opaque t :: %__MODULE__{adapter: module, state: any}
-  defstruct [:adapter, :state]
-
-  @spec new(config_t) :: t
-  def new(%adapter{} = config) do
-    %__MODULE__{
-      adapter: adapter,
-      state: adapter.init(config)
-    }
-  end
+  @opaque t :: %__MODULE__{driver: Driver.t()}
+  defstruct [:driver]
 
   def new(url = "http" <> _rest) do
-    new(%HLS.Storage.HTTP{url: url})
+    %__MODULE__{driver: HLS.Storage.HTTP.new(url)}
   end
 
   def new(path) when is_binary(path) do
-    new(%HLS.Storage.FS{location: path})
+    %__MODULE__{driver: HLS.Storage.FS.new(path)}
   end
 
-  @spec get_master_playlist(t) :: {:ok, Master.t()} | error_t()
-  def get_master_playlist(storage) do
-    with {:ok, content} <- storage.adapter.get(storage.state) do
-      {:ok, Playlist.unmarshal(content, Master)}
+  @spec get_master_playlist(t) :: {:ok, Master.t()} | Driver.error_t()
+  def get_master_playlist(%__MODULE__{driver: driver}) do
+    with {:ok, content} <- Driver.get(driver) do
+      {:ok, Playlist.unmarshal(content, %Master{})}
     end
   end
 
@@ -53,10 +27,10 @@ defmodule HLS.Storage do
     playlist
   end
 
-  @spec get_media_playlist(t, URI.t()) :: {:ok, Media.t()} | error_t()
-  def get_media_playlist(storage, uri) do
-    with {:ok, content} <- storage.adapter.get(storage.state, uri) do
-      {:ok, Playlist.unmarshal(content, Media)}
+  @spec get_media_playlist(t, URI.t()) :: {:ok, Media.t()} | Driver.error_t()
+  def get_media_playlist(%__MODULE__{driver: driver}, uri) do
+    with {:ok, content} <- Driver.get(driver, uri) do
+      {:ok, Playlist.unmarshal(content, %Media{})}
     end
   end
 
@@ -66,15 +40,15 @@ defmodule HLS.Storage do
     playlist
   end
 
-  @spec get_segment(t, URI.t()) :: callback_result_t()
-  def get_segment(storage, uri), do: storage.adapter.get(storage.state, uri)
+  @spec get_segment(t, URI.t()) :: Driver.callback_result_t()
+  def get_segment(%__MODULE__{driver: driver}, uri), do: Driver.get(driver, uri)
 
-  @spec get_segment!(t, URI.t()) :: content_t()
+  @spec get_segment!(t, URI.t()) :: Driver.content_t()
   def get_segment!(storage, uri) do
-    {:ok, content} = storage.adapter.get(storage.state, uri)
+    {:ok, content} = get_segment(storage, uri)
     content
   end
 
   @spec ready?(t) :: boolean()
-  def ready?(storage), do: storage.adapter.ready?(storage.state)
+  def ready?(%__MODULE__{driver: driver}), do: Driver.ready?(driver)
 end
