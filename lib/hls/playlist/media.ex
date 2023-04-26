@@ -9,7 +9,7 @@ defmodule HLS.Playlist.Media do
           # https://www.rfc-editor.org/rfc/rfc8216#section-4.3.3.1
           target_segment_duration: pos_integer(),
           # the relative sequence number this playlist starts from. Used when
-          # not all segments are listed in the playlist. 
+          # not all segments are listed in the playlist.
           # https://www.rfc-editor.org/rfc/# rfc8216#section-4.3.3.2
           media_sequence_number: pos_integer(),
           last_media_sequence_number: pos_integer(),
