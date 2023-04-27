@@ -1,5 +1,5 @@
 defmodule HLS.Storage do
-  alias HLS.Playlist
+  alias HLS.{Playlist, Segment}
   alias HLS.Playlist.{Master, Media}
   alias HLS.Storage.Driver
 
@@ -47,6 +47,14 @@ defmodule HLS.Storage do
   def get_segment!(storage, uri) do
     {:ok, content} = get_segment(storage, uri)
     content
+  end
+
+  def put_segment(storage, %Segment{uri: uri}, payload, opts \\ []) do
+    put(storage, uri, payload, opts)
+  end
+
+  def put(%__MODULE__{driver: driver}, uri, payload, opts \\ []) do
+    Driver.put(driver, uri, payload, opts)
   end
 
   @spec ready?(t) :: boolean()

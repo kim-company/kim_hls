@@ -5,11 +5,12 @@ defmodule HLS.Segment do
           uri: URI.t(),
           # Expressed in seconds.
           duration: float(),
+          from: float() | nil,
           relative_sequence: pos_integer(),
           absolute_sequence: pos_integer() | nil
         }
 
-  defstruct [:uri, :duration, :relative_sequence, :absolute_sequence]
+  defstruct [:uri, :duration, :relative_sequence, :absolute_sequence, :from]
 
   @spec from_tags([Tag.t()]) :: t()
   def from_tags(tags) do
@@ -40,5 +41,19 @@ defmodule HLS.Segment do
   @spec update_absolute_sequence(t, pos_integer()) :: t
   def update_absolute_sequence(segment, media_sequence) do
     %__MODULE__{segment | absolute_sequence: media_sequence + segment.relative_sequence}
+  end
+
+  def generate_next_segment(%__MODULE__{
+        duration: duration,
+        relative_sequence: relative_sequence,
+        absolute_sequence: absolute_sequence,
+        from: from
+      }) do
+    %__MODULE__{
+      duration: duration,
+      from: from + duration,
+      relative_sequence: relative_sequence + 1,
+      absolute_sequence: absolute_sequence + 1
+    }
   end
 end
