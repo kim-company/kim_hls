@@ -22,6 +22,12 @@ defimpl HLS.Storage.Driver, for: HLS.Storage.FS do
     |> File.exists?()
   end
 
+  @impl true
+  def put(%HLS.Storage.FS{dirname: dir}, %URI{path: rel}, data, _opts) do
+    path = Path.join([dir, rel])
+    File.write!(path, data)
+  end
+
   defp load(path) when is_list(path) do
     path
     |> Path.join()

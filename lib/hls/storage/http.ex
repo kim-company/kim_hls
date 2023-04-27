@@ -55,6 +55,11 @@ defimpl HLS.Storage.Driver, for: HLS.Storage.HTTP do
     end
   end
 
+  @impl true
+  def put(_driver, _uri, _data, _opts) do
+    raise "Not implemented"
+  end
+
   defp decode_query(nil), do: []
 
   defp decode_query(raw) when is_binary(raw) do

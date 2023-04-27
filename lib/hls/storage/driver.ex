@@ -10,6 +10,9 @@ defprotocol HLS.Storage.Driver do
   @spec get(t(), URI.t()) :: callback_result_t
   def get(driver, uri)
 
+  @spec put(t(), URI.t(), binary(), Keyword.t()) :: :ok | error_t
+  def put(driver, uri, data, opts)
+
   @spec ready?(t()) :: boolean()
   def ready?(driver)
 end

@@ -71,4 +71,9 @@ defimpl HLS.Storage.Driver, for: Support.OneMoreMediaStorage do
 
   @impl true
   def ready?(_), do: true
+
+  @impl true
+  def put(_, _, _, _) do
+    raise "Not implemented"
+  end
 end
