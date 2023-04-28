@@ -9,7 +9,7 @@ defmodule HLS.Playlist.Media.Builder do
           segment: Segment.t(),
           acc: [timed_payload()]
         }
-  defstruct [:playlist, :segment_extension, timed_segments: [], to_upload: []]
+  defstruct [:playlist, :segment_extension, timed_segments: [], to_upload: [], closed: false]
 
   def new(
         playlist = %Media{
@@ -37,6 +37,10 @@ defmodule HLS.Playlist.Media.Builder do
   defp current_segment_to([%{to: to} | _]), do: to
 
   defp real_segment_to(%{acc: [%{to: to} | _]}), do: to
+
+  def fit(%__MODULE__{closed: true}, _) do
+    raise "Cannot fit timed payload into a finished playlist"
+  end
 
   def fit(
         builder = %__MODULE__{
@@ -112,13 +116,14 @@ defmodule HLS.Playlist.Media.Builder do
       |> Enum.map(fn %{segment: x} -> x end)
       |> Enum.reverse()
 
-    playlist = %Media{playlist | segments: playlist_segments ++ new_segments}
+    playlist = %Media{playlist | segments: playlist_segments ++ new_segments, finished: true}
 
     %__MODULE__{
       builder
       | timed_segments: [],
         to_upload: new_segments,
-        playlist: playlist
+        playlist: playlist,
+        closed: true
     }
   end
 
