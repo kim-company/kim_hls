@@ -108,6 +108,7 @@ defmodule HLS.Playlist.Media.Builder do
   def flush(
         builder = %__MODULE__{
           timed_segments: timed_segments,
+          to_upload: to_upload,
           playlist: playlist = %Media{segments: playlist_segments}
         }
       ) do
@@ -121,7 +122,7 @@ defmodule HLS.Playlist.Media.Builder do
     %__MODULE__{
       builder
       | timed_segments: [],
-        to_upload: new_segments,
+        to_upload: to_upload ++ Enum.reverse(timed_segments),
         playlist: playlist,
         closed: true
     }
