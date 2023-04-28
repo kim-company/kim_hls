@@ -40,7 +40,10 @@ defmodule HLS.Playlist.Media.BuilderTest do
     {uploadables, builder} = Builder.take_uploadables(builder)
     assert length(uploadables) == 1
 
-    assert %{payload: ["a", "b"], uri: URI.new!("http://example.com/data/media/00000.ts")} ==
+    assert %{
+             payload: [%{from: 1, to: 2, payload: "a"}, %{from: 2, to: 3, payload: "b"}],
+             uri: URI.new!("http://example.com/data/media/00000.ts")
+           } ==
              List.first(uploadables)
 
     playlist = Builder.playlist(builder)
