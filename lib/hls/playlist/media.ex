@@ -15,7 +15,7 @@ defmodule HLS.Playlist.Media do
           uri: URI.t() | nil,
           # Indicates that the playlist has become VOD.
           finished: boolean(),
-          segments_reversed: [Segment.t()]
+          segments: [Segment.t()]
         }
 
   defstruct [
@@ -25,195 +25,142 @@ defmodule HLS.Playlist.Media do
     media_sequence_number: 0,
     version: 7,
     tags: %{},
-    segments_reversed: []
+    segments: []
   ]
 
+  @spec new(URI.t(), pos_integer()) :: t()
+  def new(uri, target_segment_duration) do
+    %__MODULE__{uri: uri, target_segment_duration: target_segment_duration}
+  end
+
+  @doc """
+  Segment's path may be relative to their hosting media playlist URI. This
+  function produces the URI that points to the resource.
+  """
+  @spec build_segment_uri(t(), Segment.t()) :: URI.t()
+  def build_segment_uri(%__MODULE__{uri: base = %URI{path: path}}, %Segment{uri: rel}) do
+    base = %URI{base | path: String.trim_trailing(path, Path.extname(path)) <> "/"}
+    URI.merge(base, rel)
+  end
+
   @spec segments(t) :: [Segment.t()]
-  def segments(%__MODULE__{segments_reversed: segs}), do: Enum.reverse(segs)
+  def segments(%__MODULE__{segments: segs}), do: segs
 
-  def update_segment_uri(
-        segment = %Segment{absolute_sequence: sequence},
-        %__MODULE__{uri: uri},
-        extension
-      ) do
-    %URI{path: path} = uri
-    dir = String.trim_trailing(path, ".m3u8")
-
-    filename =
-      sequence
-      |> to_string()
-      |> String.pad_leading(5, "0")
-
-    filename_with_extension = filename <> extension
-    uri = %URI{uri | path: Path.join([dir, filename_with_extension])}
-    %Segment{segment | uri: uri}
+  @spec compute_playlist_duration(t()) :: float()
+  def compute_playlist_duration(%__MODULE__{segments: segments}) do
+    Enum.reduce(segments, 0.0, fn %Segment{duration: d}, acc -> acc + d end)
   end
+end
 
-  def generate_missing_segments(
-        playlist = %__MODULE__{
-          segments_reversed: [],
-          media_sequence_number: offset,
-          target_segment_duration: duration
-        },
-        seconds,
-        extension
+defimpl HLS.Playlist.Marshaler, for: HLS.Playlist.Media do
+  alias HLS.Playlist.Tag
+  alias HLS.Segment
+
+  @impl true
+  def marshal(
+        playlist = %HLS.Playlist.Media{
+          version: 7,
+          segments: segments,
+          finished: finished
+        }
       ) do
-    segment =
-      %Segment{
-        relative_sequence: 0,
-        from: 0,
-        duration: duration
-      }
-      |> Segment.update_absolute_sequence(offset)
-      |> update_segment_uri(playlist, extension)
-
-    generate_missing_segments(
-      %__MODULE__{playlist | segments_reversed: [segment]},
-      seconds,
-      extension
-    )
-  end
-
-  def generate_missing_segments(
-        playlist = %__MODULE__{
-          segments_reversed: segments = [segment = %Segment{from: from, duration: duration} | _]
-        },
-        seconds,
-        extension
-      ) do
-    to = duration + from
-
-    if from <= seconds and seconds < to do
-      # We're within the boundaries!
+    header_tags =
       playlist
-    else
-      if seconds >= to do
-        segment =
-          segment
-          |> Segment.generate_next_segment()
-          |> update_segment_uri(playlist, extension)
+      |> header_tags_with_values()
+      |> Enum.filter(fn {_, value} -> value != nil end)
+      |> Enum.map(fn {tag, value} -> Tag.marshal(tag, value) end)
+      |> Enum.join("\n")
 
-        generate_missing_segments(
-          %__MODULE__{playlist | segments_reversed: [segment | segments]},
-          seconds,
-          extension
-        )
+    segments =
+      segments
+      |> Enum.map(fn %Segment{duration: duration, uri: uri} ->
+        [Tag.marshal(Tag.Inf, duration) <> ",", to_string(uri)]
+        |> Enum.join("\n")
+      end)
+      |> Enum.join("\n")
+
+    rows = ["#EXTM3U", header_tags, segments]
+
+    rows =
+      if finished do
+        rows ++ [Tag.marshal_id(Tag.EndList.id())]
       else
-        raise "Target seconds lay in the past!"
+        rows
       end
-    end
+
+    payload = rows |> Enum.join("\n")
+    payload <> "\n"
   end
 
-  defimpl HLS.Playlist.Marshaler, for: HLS.Playlist.Media do
-    alias HLS.Playlist.Tag
-    alias HLS.Segment
+  def header_tags_with_values(%HLS.Playlist.Media{
+        version: version,
+        target_segment_duration: target_segment_duration,
+        media_sequence_number: media_sequence_number
+      }) do
+    [
+      {Tag.Version, version},
+      {Tag.TargetSegmentDuration, trunc(target_segment_duration)},
+      {Tag.MediaSequenceNumber, media_sequence_number}
+    ]
+  end
+end
 
-    @impl true
-    def marshal(
-          playlist = %HLS.Playlist.Media{
-            version: 7,
-            segments_reversed: segments,
-            finished: finished
-          }
-        ) do
-      header_tags =
-        playlist
-        |> header_tags_with_values()
-        |> Enum.filter(fn {_, value} -> value != nil end)
-        |> Enum.map(fn {tag, value} -> Tag.marshal(tag, value) end)
-        |> Enum.join("\n")
+defimpl HLS.Playlist.Unmarshaler, for: HLS.Playlist.Media do
+  alias HLS.Playlist.Tag
+  alias HLS.Segment
 
-      segments =
-        segments
-        |> Enum.reverse()
-        |> Enum.map(fn %Segment{duration: duration, uri: uri} ->
-          [Tag.marshal(Tag.Inf, duration) <> ",", to_string(uri)]
-          |> Enum.join("\n")
-        end)
-        |> Enum.join("\n")
-
-      rows = ["#EXTM3U", header_tags, segments]
-
-      rows =
-        if finished do
-          rows ++ [Tag.marshal_id(Tag.EndList.id())]
-        else
-          rows
-        end
-
-      payload = rows |> Enum.join("\n")
-      payload <> "\n"
-    end
-
-    def header_tags_with_values(%HLS.Playlist.Media{
-          version: version,
-          target_segment_duration: target_segment_duration,
-          media_sequence_number: media_sequence_number
-        }) do
-      [
-        {Tag.Version, version},
-        {Tag.TargetSegmentDuration, trunc(target_segment_duration)},
-        {Tag.MediaSequenceNumber, media_sequence_number}
-      ]
-    end
+  @impl true
+  def supported_tags(_) do
+    [
+      Tag.Version,
+      Tag.TargetSegmentDuration,
+      Tag.MediaSequenceNumber,
+      Tag.EndList,
+      Tag.Inf,
+      Tag.SegmentURI
+    ]
   end
 
-  defimpl HLS.Playlist.Unmarshaler, for: HLS.Playlist.Media do
-    alias HLS.Playlist.Tag
-    alias HLS.Segment
+  @impl true
+  def load_tags(playlist, tags) do
+    [version] = Map.fetch!(tags, Tag.Version.id())
+    [segment_duration] = Map.fetch!(tags, Tag.TargetSegmentDuration.id())
+    [sequence_number] = Map.fetch!(tags, Tag.MediaSequenceNumber.id())
 
-    @impl true
-    def supported_tags(_) do
-      [
-        Tag.Version,
-        Tag.TargetSegmentDuration,
-        Tag.MediaSequenceNumber,
-        Tag.EndList,
-        Tag.Inf,
-        Tag.SegmentURI
-      ]
-    end
+    finished =
+      case Map.get(tags, Tag.EndList.id()) do
+        nil -> false
+        [endlist] -> endlist.value
+      end
 
-    @impl true
-    def load_tags(playlist, tags) do
-      [version] = Map.fetch!(tags, Tag.Version.id())
-      [segment_duration] = Map.fetch!(tags, Tag.TargetSegmentDuration.id())
-      [sequence_number] = Map.fetch!(tags, Tag.MediaSequenceNumber.id())
+    segments =
+      tags
+      |> Enum.filter(fn
+        {{_, :segment}, _val} -> true
+        _other -> false
+      end)
+      |> Enum.map(fn {{seq, _}, val} -> {seq, val} end)
+      |> Enum.into([])
+      |> Enum.sort()
+      |> Enum.map(fn {_, val} -> Segment.from_tags(val) end)
+      |> Enum.map(&Segment.update_absolute_sequence(&1, sequence_number.value))
+      |> Enum.reduce([], fn
+        segment, [] ->
+          [%Segment{segment | from: 0}]
 
-      finished =
-        case Map.get(tags, Tag.EndList.id()) do
-          nil -> false
-          [endlist] -> endlist.value
-        end
+        next, acc = [%Segment{from: from, duration: duration} | _] ->
+          [%Segment{next | from: from + duration} | acc]
+      end)
+      |> Enum.reverse()
 
-      segments =
-        tags
-        |> Enum.filter(fn
-          {{_, :segment}, _val} -> true
-          _other -> false
-        end)
-        |> Enum.map(fn {{seq, _}, val} -> {seq, val} end)
-        |> Enum.into([])
-        |> Enum.sort()
-        |> Enum.map(fn {_, val} -> Segment.from_tags(val) end)
-        |> Enum.map(&Segment.update_absolute_sequence(&1, sequence_number.value))
-        |> Enum.reduce([], fn
-          segment, [] ->
-            [%Segment{segment | from: 0}]
-
-          next, acc = [%Segment{from: from, duration: duration} | _] ->
-            [%Segment{next | from: from + duration} | acc]
-        end)
-
-      %HLS.Playlist.Media{
-        playlist
-        | tags: tags,
-          version: version.value,
-          target_segment_duration: segment_duration.value,
-          media_sequence_number: sequence_number.value,
-          finished: finished,
-          segments_reversed: segments
-      }
-    end
+    %HLS.Playlist.Media{
+      playlist
+      | tags: tags,
+        version: version.value,
+        target_segment_duration: segment_duration.value,
+        media_sequence_number: sequence_number.value,
+        finished: finished,
+        segments: segments
+    }
   end
 end

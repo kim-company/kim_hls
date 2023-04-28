@@ -1,19 +1,37 @@
 defmodule HLS.PlaylistTest do
   use ExUnit.Case
 
-  alias HLS.{Playlist, VariantStream, AlternativeRendition}
+  alias HLS.{Playlist, VariantStream, AlternativeRendition, Segment}
   alias HLS.Playlist.{Master, Media}
 
   describe "Marshal Media Playlist" do
+    segments =
+      [
+        %Segment{
+          duration: 3.0
+        },
+        %Segment{
+          duration: 2.0
+        }
+      ]
+      |> Enum.with_index()
+      |> Enum.map(fn {seg, index} ->
+        %Segment{
+          seg
+          | uri: URI.new!("data/#{index}.ts"),
+            absolute_sequence: index,
+            relative_sequence: index
+        }
+      end)
+
     playlist = %Media{
       version: 7,
       target_segment_duration: 3.0,
       media_sequence_number: 0,
       finished: false,
-      uri: URI.new!("data.m3u8")
+      uri: URI.new!("https://example.com/data.m3u8"),
+      segments: segments
     }
-
-    playlist = Media.generate_missing_segments(playlist, 7.0, ".ts")
 
     marshaled = """
       #EXTM3U
@@ -21,11 +39,9 @@ defmodule HLS.PlaylistTest do
       #EXT-X-TARGETDURATION:3
       #EXT-X-MEDIA-SEQUENCE:0
       #EXTINF:3.0,
-      data/00000.ts
-      #EXTINF:3.0,
-      data/00001.ts
-      #EXTINF:3.0,
-      data/00002.ts
+      data/0.ts
+      #EXTINF:2.0,
+      data/1.ts
     """
 
     assert Playlist.marshal(playlist) == String.replace(marshaled, " ", "", global: true)
