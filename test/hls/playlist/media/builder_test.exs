@@ -24,6 +24,21 @@ defmodule HLS.Playlist.Media.BuilderTest do
     refute Enum.any?(segments, fn %Segment{uri: x} -> x == nil end)
   end
 
+  test "flushes when the payload finishes in the next segment window" do
+    playlist = Media.new(URI.new!("/data/media.m3u8"), 1)
+
+    builder =
+      playlist
+      |> Builder.new(".ts")
+      # Buffers are allowed to start in a segment and finish in the other one.
+      |> Builder.fit(%{from: 1, to: 1.5, payload: <<>>})
+
+    playlist = Builder.playlist(builder)
+    segments = Media.segments(playlist)
+
+    assert length(segments) == 1
+  end
+
   test "take uploadables" do
     playlist = Media.new(URI.new!("http://example.com/data/media.m3u8"), 3)
 
