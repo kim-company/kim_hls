@@ -12,7 +12,7 @@ defmodule HLS.Playlist.Media.BuilderTest do
       playlist
       |> Builder.new(".ts")
       # Buffers are allowed to start in a segment and finish in the other one.
-      |> Builder.fit(%{from: 4, to: 6, payload: <<>>})
+      |> Builder.fit(%{from: 4, to: 5, payload: <<>>})
       |> Builder.flush()
 
     playlist = Builder.playlist(builder)
@@ -25,24 +25,26 @@ defmodule HLS.Playlist.Media.BuilderTest do
   end
 
   test "flushes when the payload finishes in the next segment window" do
-    playlist = Media.new(URI.new!("/data/media.m3u8"), 1)
+    playlist = Media.new(URI.new!("s3://bucket/media.m3u8"), 1)
 
-    builder =
+    {uploadables, builder} =
       playlist
       |> Builder.new(".ts")
       # Buffers are allowed to start in a segment and finish in the other one.
-      |> Builder.fit(%{from: 1, to: 1.5, payload: <<>>})
+      |> Builder.fit(%{from: 0, to: 1.5, payload: <<>>})
+      |> Builder.take_uploadables()
 
     playlist = Builder.playlist(builder)
     segments = Media.segments(playlist)
 
     assert length(segments) == 1
+    assert length(uploadables) == 1
   end
 
   test "take uploadables" do
     playlist = Media.new(URI.new!("http://example.com/data/media.m3u8"), 3)
 
-    builder =
+    {uploadables, builder} =
       playlist
       |> Builder.new(".ts")
       # Buffers are allowed to start in a segment and finish in the other one.
@@ -51,8 +53,8 @@ defmodule HLS.Playlist.Media.BuilderTest do
       # This buffer triggers a segment window switch forward, hence the previous
       # one is considered complete.
       |> Builder.fit(%{from: 3, to: 5, payload: "c"})
+      |> Builder.take_uploadables()
 
-    {uploadables, builder} = Builder.take_uploadables(builder)
     assert length(uploadables) == 1
 
     assert %{

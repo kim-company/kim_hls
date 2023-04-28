@@ -36,9 +36,12 @@ defmodule HLS.Playlist.Media.Builder do
   defp current_segment_from([%{from: from} | _]), do: from
   defp current_segment_to([%{to: to} | _]), do: to
 
+  defp real_segment_to(%{acc: [%{to: to} | _]}), do: to
+
   def fit(
         builder = %__MODULE__{
           timed_segments: segments,
+          to_upload: to_upload,
           playlist:
             playlist = %Media{
               target_segment_duration: segment_duration,
@@ -68,8 +71,23 @@ defmodule HLS.Playlist.Media.Builder do
     last_timed_segment =
       update_in(last_timed_segment, [:acc], fn acc -> [timed_payload | acc] end)
 
+    # Here we're checking wether the last buffer we put in the last segment is
+    # going to be the last one for it. It happens when the buffer finishes after
+    # the segment duration (or at its boundary)
+    last_to = real_segment_to(last_timed_segment)
+    segment_to = current_segment_to([last_timed_segment])
+
+    {complete_segments, timed_segments} =
+      if real_segment_to(last_timed_segment) >= segment_to do
+        all = [last_timed_segment | rest]
+        [h | _] = extend_timed_segments_till(all, last_to, segment_duration)
+        {all, [h]}
+      else
+        {rest, [last_timed_segment]}
+      end
+
     new_segments =
-      rest
+      complete_segments
       |> Enum.map(fn %{segment: x} -> x end)
       |> Enum.reverse()
 
@@ -77,8 +95,8 @@ defmodule HLS.Playlist.Media.Builder do
 
     %__MODULE__{
       builder
-      | timed_segments: [last_timed_segment],
-        to_upload: rest,
+      | timed_segments: timed_segments,
+        to_upload: to_upload ++ complete_segments,
         playlist: playlist
     }
   end
