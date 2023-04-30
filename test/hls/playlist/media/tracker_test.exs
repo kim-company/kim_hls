@@ -3,21 +3,22 @@ defmodule HLS.Playlist.Media.TrackerTest do
 
   alias HLS.Playlist.Media.Tracker
   alias HLS.Segment
-  alias HLS.Storage
-  alias Support.OneMoreMediaStorage
+  alias HLS.Reader
+  alias Support.ControlledStorage
 
-  @master_playlist_path "./test/fixtures/mpeg-ts/stream.m3u8"
-  @store Storage.new(@master_playlist_path)
+  @local_master_uri URI.new!("./test/fixtures/mpeg-ts/stream.m3u8")
 
   describe "tracker process" do
     test "starts and exits on demand" do
-      assert {:ok, pid} = Tracker.start_link(@store)
+      store = Reader.new(@local_master_uri)
+      assert {:ok, pid} = Tracker.start_link(store)
       assert Process.alive?(pid)
       assert :ok = Tracker.stop(pid)
     end
 
     test "sends one message for each segment in a static track" do
-      {:ok, pid} = Tracker.start_link(@store)
+      store = Reader.new(@local_master_uri)
+      {:ok, pid} = Tracker.start_link(store)
       ref = Tracker.follow(pid, URI.parse("stream_416x234.m3u8"))
 
       # sequence goes from 1 to 5 as the target playlist starts with a media
@@ -33,7 +34,8 @@ defmodule HLS.Playlist.Media.TrackerTest do
 
     #
     test "sends start of track message identifing first sequence number" do
-      {:ok, pid} = Tracker.start_link(@store)
+      store = Reader.new(@local_master_uri)
+      {:ok, pid} = Tracker.start_link(store)
       ref = Tracker.follow(pid, URI.parse("stream_416x234.m3u8"))
 
       assert_receive {:start_of_track, ^ref, 1}, 1000
@@ -42,7 +44,8 @@ defmodule HLS.Playlist.Media.TrackerTest do
     end
 
     test "sends track termination message when track is finished" do
-      {:ok, pid} = Tracker.start_link(@store)
+      store = Reader.new(@local_master_uri)
+      {:ok, pid} = Tracker.start_link(store)
       ref = Tracker.follow(pid, URI.parse("stream_416x234.m3u8"))
 
       assert_receive {:end_of_track, ^ref}, 1000
@@ -51,9 +54,16 @@ defmodule HLS.Playlist.Media.TrackerTest do
     end
 
     test "keeps on sending updates when the playlist does" do
-      store = %Storage{driver: OneMoreMediaStorage.new(initial: 1, target_duration: 1)}
+      master_uri = URI.new!("one_more.m3u8")
+
+      store = %Reader{
+        storage:
+          ControlledStorage.new(initial: 1, target_duration: 1, master_playlist_uri: master_uri),
+        master_playlist_uri: master_uri
+      }
+
       {:ok, pid} = Tracker.start_link(store)
-      ref = Tracker.follow(pid, URI.parse("one_more.m3u8"))
+      ref = Tracker.follow(pid, master_uri)
 
       assert_receive {:segment, ^ref, %Segment{absolute_sequence: 0}}, 200
       assert_receive {:segment, ^ref, %Segment{absolute_sequence: 1}}, 200
@@ -70,9 +80,16 @@ defmodule HLS.Playlist.Media.TrackerTest do
     end
 
     test "when the playlist is not finished, it does not deliver more than 3 packets at first" do
-      store = %Storage{driver: OneMoreMediaStorage.new(initial: 4, target_duration: 1)}
+      master_uri = URI.new!("one_more.m3u8")
+
+      store = %Reader{
+        storage:
+          ControlledStorage.new(initial: 4, target_duration: 1, master_playlist_uri: master_uri),
+        master_playlist_uri: master_uri
+      }
+
       {:ok, pid} = Tracker.start_link(store)
-      ref = Tracker.follow(pid, URI.parse("one_more.m3u8"))
+      ref = Tracker.follow(pid, master_uri)
 
       assert_receive {:start_of_track, ^ref, 2}, 200
 

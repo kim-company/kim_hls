@@ -1,40 +1,18 @@
 defmodule HLS.Storage.FS do
-  defstruct [:location, :dirname, :basename]
+  defstruct []
 
-  def new(location) do
-    basename = Path.basename(location)
-    dirname = Path.dirname(location)
-    %__MODULE__{basename: basename, dirname: dirname}
+  def new() do
+    %__MODULE__{}
   end
 end
 
-defimpl HLS.Storage.Driver, for: HLS.Storage.FS do
+defimpl HLS.Storage, for: HLS.Storage.FS do
   @impl true
-  def get(%HLS.Storage.FS{dirname: dir, basename: manifest}), do: load([dir, manifest])
-
-  @impl true
-  def get(%HLS.Storage.FS{dirname: dir}, %URI{path: rel}), do: load([dir, rel])
+  def read(_, %URI{path: path}, _), do: File.read(path)
 
   @impl true
-  def ready?(%HLS.Storage.FS{dirname: dir, basename: manifest}) do
-    dir
-    |> Path.join(manifest)
-    |> File.exists?()
-  end
+  def exists?(_, %URI{path: path}), do: File.exists?(path)
 
   @impl true
-  def put(%HLS.Storage.FS{dirname: dir}, %URI{path: rel}, data, _opts) do
-    path = Path.join([dir, rel])
-    File.write!(path, data)
-  end
-
-  defp load(path) when is_list(path) do
-    path
-    |> Path.join()
-    |> load()
-  end
-
-  defp load(path) when is_binary(path) do
-    File.read(path)
-  end
+  def write(_, %URI{path: path}, data, _opts), do: File.write!(path, data)
 end

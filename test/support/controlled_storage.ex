@@ -1,8 +1,14 @@
-defmodule Support.OneMoreMediaStorage do
-  defstruct [:pid]
+defmodule Support.ControlledStorage do
+  defstruct [:pid, :master_playlist_uri]
 
   def new(opts \\ []) do
-    opts = Keyword.validate!(opts, [:initial, max: 1, target_duration: 1])
+    opts =
+      Keyword.validate!(opts, [
+        :initial,
+        max: 1,
+        target_duration: 1,
+        master_playlist_uri: URI.new!("master.m3u8")
+      ])
 
     {:ok, pid} =
       Agent.start(fn ->
@@ -14,17 +20,17 @@ defmodule Support.OneMoreMediaStorage do
         }
       end)
 
-    %__MODULE__{pid: pid}
+    %__MODULE__{pid: pid, master_playlist_uri: Keyword.fetch!(opts, :master_playlist_uri)}
   end
 end
 
-defimpl HLS.Storage.Driver, for: Support.OneMoreMediaStorage do
-  alias Support.OneMoreMediaStorage
+defimpl HLS.Storage, for: Support.ControlledStorage do
+  alias Support.ControlledStorage, as: Mock
 
   @media_track_path "one_more.m3u8"
 
   @impl true
-  def get(_) do
+  def read(%Mock{master_playlist_uri: playlist}, playlist, _) do
     {:ok,
      """
      #EXTM3U
@@ -36,7 +42,7 @@ defimpl HLS.Storage.Driver, for: Support.OneMoreMediaStorage do
   end
 
   @impl true
-  def get(%OneMoreMediaStorage{pid: pid}, %URI{path: @media_track_path}) do
+  def read(%Mock{pid: pid}, _, _) do
     config =
       Agent.get_and_update(pid, fn state ->
         {state, %{state | calls: state.calls + 1}}
@@ -70,10 +76,10 @@ defimpl HLS.Storage.Driver, for: Support.OneMoreMediaStorage do
   end
 
   @impl true
-  def ready?(_), do: true
+  def exists?(_, _), do: true
 
   @impl true
-  def put(_, _, _, _) do
+  def write(_, _, _, _) do
     raise "Not implemented"
   end
 end

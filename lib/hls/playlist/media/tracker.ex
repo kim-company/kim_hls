@@ -1,11 +1,11 @@
 defmodule HLS.Playlist.Media.Tracker do
   use GenServer
 
-  alias HLS.Storage
+  alias HLS.Reader
   alias HLS.Playlist.Media
   alias HLS.Segment
 
-  defstruct [:storage, following: %{}]
+  defstruct [:reader, following: %{}]
 
   @type target_t :: URI.t()
 
@@ -17,8 +17,8 @@ defmodule HLS.Playlist.Media.Tracker do
 
   def initial_live_buffer_size(), do: @max_initial_live_segments
 
-  def start_link(storage = %Storage{}, opts \\ []) do
-    GenServer.start_link(__MODULE__, storage, opts)
+  def start_link(reader = %Reader{}, opts \\ []) do
+    GenServer.start_link(__MODULE__, reader, opts)
   end
 
   @spec stop(pid()) :: :ok
@@ -30,8 +30,8 @@ defmodule HLS.Playlist.Media.Tracker do
   end
 
   @impl true
-  def init(storage) do
-    {:ok, %__MODULE__{storage: storage}}
+  def init(reader) do
+    {:ok, %__MODULE__{reader: reader}}
   end
 
   @impl true
@@ -54,7 +54,7 @@ defmodule HLS.Playlist.Media.Tracker do
 
   defp handle_refresh(tracking, state) do
     uri = tracking.target
-    playlist = Storage.get_media_playlist!(state.storage, uri)
+    playlist = Reader.read_media_playlist!(state.reader, uri)
     segs = Media.segments(playlist)
 
     # Determine initial sequence number, sending the start_of_track message if

@@ -1,12 +1,8 @@
 defmodule HLS.Storage.HTTP do
-  defstruct [:url, :client, follow_redirects?: false]
+  defstruct [:client, follow_redirects?: false]
 
-  def new(url, follow_redirects? \\ false) do
-    uri = URI.parse(url)
-    base_url = "#{uri.scheme}://#{uri.authority}#{Path.dirname(uri.path)}"
-
+  def new(follow_redirects? \\ false) do
     middleware = [
-      {Tesla.Middleware.BaseUrl, base_url},
       {Tesla.Middleware.Retry,
        delay: 100,
        max_retries: 10,
@@ -25,38 +21,35 @@ defmodule HLS.Storage.HTTP do
         middleware
       end
 
-    %__MODULE__{client: Tesla.client(middleware), url: url, follow_redirects?: follow_redirects?}
+    %__MODULE__{client: Tesla.client(middleware), follow_redirects?: follow_redirects?}
   end
 end
 
-defimpl HLS.Storage.Driver, for: HLS.Storage.HTTP do
+defimpl HLS.Storage, for: HLS.Storage.HTTP do
+  alias HLS.Storage.HTTP
   @impl true
-  def get(%HLS.Storage.HTTP{client: client, url: url}) do
+  def read(%HTTP{client: client}, uri = %URI{query: query}, _) do
+    query = decode_query(query)
+    uri = %URI{uri | query: nil}
+
     client
-    |> Tesla.get(url)
+    |> Tesla.get(URI.to_string(uri), query: query)
     |> handle_response()
   end
 
   @impl true
-  def get(%HLS.Storage.HTTP{client: client}, uri) do
-    client
-    |> Tesla.get(uri.path, query: decode_query(uri.query))
-    |> handle_response()
-  end
-
-  @impl true
-  def ready?(%HLS.Storage.HTTP{url: url} = config) do
-    middleware = if config.follow_redirects?, do: [Tesla.Middleware.FollowRedirects], else: []
+  def exists?(%HTTP{follow_redirects?: follow_redirects?}, uri) do
+    middleware = if follow_redirects?, do: [Tesla.Middleware.FollowRedirects], else: []
     client = Tesla.client(middleware)
 
-    case Tesla.head(client, url) do
+    case Tesla.head(client, URI.to_string(uri)) do
       {:ok, %{status: 200}} -> true
       _other -> false
     end
   end
 
   @impl true
-  def put(_driver, _uri, _data, _opts) do
+  def write(_driver, _uri, _data, _opts) do
     raise "Not implemented"
   end
 
