@@ -53,20 +53,27 @@ defmodule HLS.Playlist.Media.BuilderTest do
       # This buffer triggers a segment window switch forward, hence the previous
       # one is considered complete.
       |> Builder.fit(%{from: 3, to: 5, payload: "c"})
+      |> Builder.fit(%{from: 5, to: 7, payload: "d"})
+      |> Builder.fit(%{from: 8, to: 8.5, payload: "e"})
       |> Builder.take_uploadables()
 
-    assert length(uploadables) == 1
+    assert length(uploadables) == 2
 
-    assert %{
-             payload: [%{from: 1, to: 2, payload: "a"}, %{from: 2, to: 3, payload: "b"}],
-             uri: URI.new!("http://example.com/data/media/00000.ts")
-           } ==
-             List.first(uploadables)
+    assert [
+             %{
+               payload: [%{from: 1, to: 2, payload: "a"}, %{from: 2, to: 3, payload: "b"}],
+               uri: URI.new!("http://example.com/data/media/00000.ts")
+             },
+             %{
+               payload: [%{from: 3, to: 5, payload: "c"}, %{from: 5, to: 7, payload: "d"}],
+               uri: URI.new!("http://example.com/data/media/00001.ts")
+             }
+           ] == uploadables
 
     playlist = Builder.playlist(builder)
     segments = Media.segments(playlist)
 
     # The other one is still pending.
-    assert length(segments) == 1
+    assert length(segments) == 2
   end
 end

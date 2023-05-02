@@ -131,7 +131,6 @@ defmodule HLS.Playlist.Media.Builder do
       |> Enum.map(fn %{segment: segment, acc: acc} ->
         %{payload: Enum.reverse(acc), uri: Media.build_segment_uri(playlist.uri, segment.uri)}
       end)
-      |> Enum.reverse()
 
     {uploadables, %__MODULE__{builder | to_upload: []}}
   end
