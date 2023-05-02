@@ -1,4 +1,4 @@
-defmodule HLS.Storage.HTTP do
+defmodule HLS.FS.HTTP do
   defstruct [:client, follow_redirects?: false]
 
   def new(follow_redirects? \\ false) do
@@ -25,8 +25,9 @@ defmodule HLS.Storage.HTTP do
   end
 end
 
-defimpl HLS.Storage, for: HLS.Storage.HTTP do
-  alias HLS.Storage.HTTP
+defimpl HLS.FS.Reader, for: HLS.FS.HTTP do
+  alias HLS.FS.HTTP
+
   @impl true
   def read(%HTTP{client: client}, uri = %URI{query: query}, _) do
     query = decode_query(query)
@@ -46,11 +47,6 @@ defimpl HLS.Storage, for: HLS.Storage.HTTP do
       {:ok, %{status: 200}} -> true
       _other -> false
     end
-  end
-
-  @impl true
-  def write(_driver, _uri, _data, _opts) do
-    raise "Not implemented"
   end
 
   defp decode_query(nil), do: []

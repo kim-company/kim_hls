@@ -1,13 +1,12 @@
-defmodule Support.ControlledStorage do
-  defstruct [:pid, :master_playlist_uri]
+defmodule Support.ControlledReader do
+  defstruct [:pid]
 
   def new(opts \\ []) do
     opts =
       Keyword.validate!(opts, [
         :initial,
         max: 1,
-        target_duration: 1,
-        master_playlist_uri: URI.new!("master.m3u8")
+        target_duration: 1
       ])
 
     {:ok, pid} =
@@ -20,26 +19,12 @@ defmodule Support.ControlledStorage do
         }
       end)
 
-    %__MODULE__{pid: pid, master_playlist_uri: Keyword.fetch!(opts, :master_playlist_uri)}
+    %__MODULE__{pid: pid}
   end
 end
 
-defimpl HLS.Storage, for: Support.ControlledStorage do
-  alias Support.ControlledStorage, as: Mock
-
-  @media_track_path "one_more.m3u8"
-
-  @impl true
-  def read(%Mock{master_playlist_uri: playlist}, playlist, _) do
-    {:ok,
-     """
-     #EXTM3U
-     #EXT-X-VERSION:7
-     #EXT-X-INDEPENDENT-SEGMENTS
-     #EXT-X-STREAM-INF:BANDWIDTH=725435,CODECS="avc1.42e00a"
-     #{@media_track_path}
-     """}
-  end
+defimpl HLS.FS.Reader, for: Support.ControlledReader do
+  alias Support.ControlledReader, as: Mock
 
   @impl true
   def read(%Mock{pid: pid}, _, _) do
@@ -77,9 +62,4 @@ defimpl HLS.Storage, for: Support.ControlledStorage do
 
   @impl true
   def exists?(_, _), do: true
-
-  @impl true
-  def write(_, _, _, _) do
-    raise "Not implemented"
-  end
 end

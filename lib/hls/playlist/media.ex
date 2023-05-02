@@ -34,13 +34,12 @@ defmodule HLS.Playlist.Media do
   end
 
   @doc """
-  Segment's path may be relative to their hosting media playlist URI. This
-  function produces the URI that points to the resource.
+  Builds segment's URI relative to its media playlist's uri.
   """
-  @spec build_segment_uri(t(), Segment.t()) :: URI.t()
-  def build_segment_uri(%__MODULE__{uri: base = %URI{path: path}}, %Segment{uri: rel}) do
-    base = %URI{base | path: String.trim_trailing(path, Path.extname(path)) <> "/"}
-    URI.merge(base, rel)
+  @spec build_segment_uri(URI.t(), URI.t()) :: URI.t()
+  def build_segment_uri(media_uri = %URI{path: path}, segment_rel_uri) do
+    media_uri = %URI{media_uri | path: String.trim_trailing(path, Path.extname(path)) <> "/"}
+    URI.merge(media_uri, segment_rel_uri)
   end
 
   @spec segments(t) :: [Segment.t()]
