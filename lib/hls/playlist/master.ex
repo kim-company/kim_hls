@@ -27,11 +27,7 @@ defmodule HLS.Playlist.Master do
   Builds playlist's uri relative to its master playlist.
   """
   @spec build_media_uri(URI.t(), URI.t()) :: URI.t()
-  def build_media_uri(nil, media_uri), do: media_uri
-
-  def build_media_uri(master_uri, media_uri) do
-    URI.merge(master_uri, media_uri)
-  end
+  def build_media_uri(master_uri, media_uri), do: HLS.Helper.merge_uri(master_uri, media_uri)
 end
 
 defimpl HLS.Playlist.Unmarshaler, for: HLS.Playlist.Master do

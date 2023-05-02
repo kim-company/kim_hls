@@ -37,11 +37,7 @@ defmodule HLS.Playlist.Media do
   Builds segment's URI relative to its media playlist's uri.
   """
   @spec build_segment_uri(URI.t(), URI.t()) :: URI.t()
-  def build_segment_uri(nil, uri), do: uri
-
-  def build_segment_uri(media_uri, segment_rel_uri) do
-    URI.merge(media_uri, segment_rel_uri)
-  end
+  def build_segment_uri(media_uri, segment_uri), do: HLS.Helper.merge_uri(media_uri, segment_uri)
 
   @spec segments(t) :: [Segment.t()]
   def segments(%__MODULE__{segments: segs, uri: uri}) do

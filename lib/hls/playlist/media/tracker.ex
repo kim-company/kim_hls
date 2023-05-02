@@ -54,7 +54,7 @@ defmodule HLS.Playlist.Media.Tracker do
 
   defp read_media_playlist(reader, uri) do
     {:ok, raw_playlist} = Reader.read(reader, uri)
-    Playlist.unmarshal(raw_playlist, %Media{})
+    Playlist.unmarshal(raw_playlist, %Media{uri: uri})
   end
 
   defp handle_refresh(tracking, state) do
