@@ -15,7 +15,8 @@ defmodule HLS.Playlist.Media.Builder do
         playlist = %Media{
           segments: [],
           target_segment_duration: target_segment_duration,
-          media_sequence_number: 0
+          media_sequence_number: 0,
+          uri: uri
         },
         segment_extension
       ) do
@@ -26,17 +27,12 @@ defmodule HLS.Playlist.Media.Builder do
         %{
           from: 0,
           to: target_segment_duration,
-          segment: Segment.new(target_segment_duration, 0, 0, segment_extension),
+          segment: generate_first_segment(target_segment_duration, uri, segment_extension),
           acc: []
         }
       ]
     }
   end
-
-  defp current_segment_from([%{from: from} | _]), do: from
-  defp current_segment_to([%{to: to} | _]), do: to
-
-  defp real_segment_to(%{acc: [%{to: to} | _]}), do: to
 
   def fit(%__MODULE__{closed: true}, _) do
     raise "Cannot fit timed payload into a finished playlist"
@@ -48,7 +44,6 @@ defmodule HLS.Playlist.Media.Builder do
           to_upload: to_upload,
           playlist:
             playlist = %Media{
-              target_segment_duration: segment_duration,
               segments: playlist_segments
             }
         },
@@ -65,7 +60,7 @@ defmodule HLS.Playlist.Media.Builder do
           raise "A timed payload that starts before the active segment was received"
 
         from >= segment_to ->
-          extend_timed_segments_till(segments, from, segment_duration)
+          extend_timed_segments_till(segments, from, builder)
 
         true ->
           # Segments can already hold this buffer.
@@ -84,7 +79,7 @@ defmodule HLS.Playlist.Media.Builder do
     {complete_segments, timed_segments} =
       if real_segment_to(last_timed_segment) >= segment_to do
         all = [last_timed_segment | rest]
-        [h | _] = extend_timed_segments_till(all, last_to, segment_duration)
+        [h | _] = extend_timed_segments_till(all, last_to, builder)
         {all, [h]}
       else
         {rest, [last_timed_segment]}
@@ -144,20 +139,76 @@ defmodule HLS.Playlist.Media.Builder do
   defp extend_timed_segments_till(
          segments = [%{to: segment_to, segment: segment} | _],
          from,
-         segment_duration
+         builder = %{
+           segment_extension: extension,
+           playlist: %Media{uri: uri, target_segment_duration: duration}
+         }
        )
        when from >= segment_to do
-    next_segment = Segment.generate_next_segment(segment, segment_duration)
+    next_segment = generate_next_segment(segment, duration, uri, extension)
 
     segments = [
-      %{from: segment_to, to: segment_to + segment_duration, segment: next_segment, acc: []}
+      %{from: segment_to, to: segment_to + duration, segment: next_segment, acc: []}
       | segments
     ]
 
-    extend_timed_segments_till(segments, from, segment_duration)
+    extend_timed_segments_till(segments, from, builder)
   end
 
-  defp extend_timed_segments_till(segments, _from, _segment_duration) do
+  defp extend_timed_segments_till(segments, _from, _builder) do
     segments
+  end
+
+  defp current_segment_from([%{from: from} | _]), do: from
+  defp current_segment_to([%{to: to} | _]), do: to
+
+  defp real_segment_to(%{acc: [%{to: to} | _]}), do: to
+
+  defp generate_first_segment(target_segment_duration, media_playlist_uri, segment_extension) do
+    %Segment{
+      duration: target_segment_duration,
+      relative_sequence: 0,
+      absolute_sequence: 0
+    }
+    |> fill_segment_uri(media_playlist_uri, segment_extension)
+  end
+
+  defp generate_next_segment(
+         %Segment{
+           relative_sequence: relative_sequence,
+           absolute_sequence: absolute_sequence
+         },
+         duration,
+         media_playlist_uri,
+         segment_extension
+       ) do
+    %Segment{
+      duration: duration,
+      relative_sequence: relative_sequence + 1,
+      absolute_sequence: absolute_sequence + 1
+    }
+    |> fill_segment_uri(media_playlist_uri, segment_extension)
+  end
+
+  defp fill_segment_uri(segment = %Segment{absolute_sequence: seq}, %URI{path: path}, extension) do
+    root =
+      path
+      |> Path.basename(path)
+      |> String.trim_trailing(Path.extname(path))
+
+    filename =
+      seq
+      |> to_string()
+      |> String.pad_leading(5, "0")
+      |> List.wrap()
+      |> Enum.concat([extension])
+      |> Enum.join()
+
+    uri =
+      [root, filename]
+      |> Path.join()
+      |> URI.new!()
+
+    %Segment{segment | uri: uri}
   end
 end

@@ -39,8 +39,7 @@ defmodule HLS.Playlist.Media do
   @spec build_segment_uri(URI.t(), URI.t()) :: URI.t()
   def build_segment_uri(nil, uri), do: uri
 
-  def build_segment_uri(media_uri = %URI{path: path}, segment_rel_uri) do
-    media_uri = %URI{media_uri | path: String.trim_trailing(path, Path.extname(path)) <> "/"}
+  def build_segment_uri(media_uri, segment_rel_uri) do
     URI.merge(media_uri, segment_rel_uri)
   end
 
