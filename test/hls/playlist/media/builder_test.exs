@@ -6,7 +6,7 @@ defmodule HLS.Playlist.Media.BuilderTest do
   alias HLS.Segment
 
   test "fits one payload in the future" do
-    playlist = Media.new(URI.new!("/data/media.m3u8"), 3)
+    playlist = Media.new(URI.new!("http://example.com/data/media.m3u8"), 3)
 
     builder =
       playlist

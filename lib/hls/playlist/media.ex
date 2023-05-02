@@ -37,13 +37,20 @@ defmodule HLS.Playlist.Media do
   Builds segment's URI relative to its media playlist's uri.
   """
   @spec build_segment_uri(URI.t(), URI.t()) :: URI.t()
+  def build_segment_uri(nil, uri), do: uri
+
   def build_segment_uri(media_uri = %URI{path: path}, segment_rel_uri) do
     media_uri = %URI{media_uri | path: String.trim_trailing(path, Path.extname(path)) <> "/"}
     URI.merge(media_uri, segment_rel_uri)
   end
 
   @spec segments(t) :: [Segment.t()]
-  def segments(%__MODULE__{segments: segs}), do: segs
+  def segments(%__MODULE__{segments: segs, uri: uri}) do
+    segs
+    |> Enum.map(fn segment = %Segment{uri: segment_uri} ->
+      %Segment{segment | uri: build_segment_uri(uri, segment_uri)}
+    end)
+  end
 
   @spec compute_playlist_duration(t()) :: float()
   def compute_playlist_duration(%__MODULE__{segments: segments}) do
