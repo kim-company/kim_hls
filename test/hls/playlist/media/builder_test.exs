@@ -76,4 +76,23 @@ defmodule HLS.Playlist.Media.BuilderTest do
     # The other one is still pending.
     assert length(segments) == 2
   end
+
+  test "produces empty segments if cues span more than one segment" do
+    playlist = Media.new(URI.new!("http://example.com/data/media.m3u8"), 1)
+
+    {_uploadables, builder} =
+      playlist
+      |> Builder.new(".ts")
+      # Buffers are allowed to start in a segment and finish in the other one.
+      |> Builder.fit(%{from: 0, to: 3, payload: "a"})
+      |> Builder.fit(%{from: 3, to: 4, payload: "b"})
+      |> Builder.take_uploadables()
+
+    segments =
+      builder
+      |> Builder.playlist()
+      |> Media.segments()
+
+    assert length(segments) == 4
+  end
 end

@@ -79,8 +79,20 @@ defmodule HLS.Playlist.Media.Builder do
     {complete_segments, timed_segments} =
       if real_segment_to(last_timed_segment) >= segment_to do
         all = [last_timed_segment | rest]
-        [h | _] = extend_timed_segments_till(all, last_to, builder)
-        {all, [h]}
+
+        timed_segments =
+          [last_timed_segment]
+          |> extend_timed_segments_till(last_to, builder)
+          |> Enum.slice(Range.new(0, -2))
+
+        if length(timed_segments) > 1 do
+          # It means that the last segment contained something that
+          # spans over multiple segment, which we consider ready.
+          [h | ready] = timed_segments
+          {ready ++ all, [h]}
+        else
+          {all, timed_segments}
+        end
       else
         {rest, [last_timed_segment]}
       end
