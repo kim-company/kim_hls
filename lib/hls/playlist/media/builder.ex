@@ -77,7 +77,7 @@ defmodule HLS.Playlist.Media.Builder do
     segment_to = current_segment_to([last_timed_segment])
 
     {complete_segments, timed_segments} =
-      if real_segment_to(last_timed_segment) >= segment_to do
+      if last_to >= segment_to do
         all = [last_timed_segment | rest]
 
         timed_segments =
@@ -119,6 +119,8 @@ defmodule HLS.Playlist.Media.Builder do
           playlist: playlist = %Media{segments: playlist_segments}
         }
       ) do
+    timed_segments = Enum.drop_while(timed_segments, fn %{acc: acc} -> Enum.empty?(acc) end)
+
     new_segments =
       timed_segments
       |> Enum.map(fn %{segment: x} -> x end)
