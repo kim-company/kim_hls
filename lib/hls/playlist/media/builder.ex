@@ -41,8 +41,8 @@ defmodule HLS.Playlist.Media.Builder do
     }
   end
 
-  def fit(%__MODULE__{closed: true}, _) do
-    raise "Cannot fit timed payload into a finished playlist"
+  def fit(%__MODULE__{closed: true}, payload) do
+    raise "Cannot fit timed payload #{inspect(payload)} into a finished playlist"
   end
 
   def fit(builder = %__MODULE__{filter_uploadables_from: nil}, timed_payload = %{from: from}) do
@@ -69,7 +69,7 @@ defmodule HLS.Playlist.Media.Builder do
     [last_timed_segment | rest] =
       cond do
         from < segment_from ->
-          raise "A timed payload that starts before the active segment was received"
+          raise "Cannot fit timed payload #{inspect(timed_payload)} into current segment which starts at #{inspect(segment_from)}"
 
         from >= segment_to ->
           extend_timed_segments_till(segments, from, builder)
