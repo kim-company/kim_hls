@@ -9,7 +9,14 @@ defmodule HLS.Playlist.Media.Builder do
           segment: Segment.t(),
           acc: [timed_payload()]
         }
-  defstruct [:playlist, :segment_extension, timed_segments: [], to_upload: [], closed: false]
+  defstruct [
+    :playlist,
+    :segment_extension,
+    timed_segments: [],
+    to_upload: [],
+    closed: false,
+    filter_uploadables_from: nil
+  ]
 
   def new(
         playlist = %Media{
@@ -38,10 +45,15 @@ defmodule HLS.Playlist.Media.Builder do
     raise "Cannot fit timed payload into a finished playlist"
   end
 
+  def fit(builder = %__MODULE__{filter_uploadables_from: nil}, timed_payload = %{from: from}) do
+    fit(%__MODULE__{builder | filter_uploadables_from: from}, timed_payload)
+  end
+
   def fit(
         builder = %__MODULE__{
           timed_segments: segments,
           to_upload: to_upload,
+          filter_uploadables_from: filter_uploadables_from,
           playlist:
             playlist = %Media{
               segments: playlist_segments
@@ -97,17 +109,21 @@ defmodule HLS.Playlist.Media.Builder do
         {rest, [last_timed_segment]}
       end
 
+    complete_segments = Enum.reverse(complete_segments)
+
+    uploadable_segments =
+      Enum.drop_while(complete_segments, fn %{to: to} -> to <= filter_uploadables_from end)
+
     new_segments =
       complete_segments
       |> Enum.map(fn %{segment: x} -> x end)
-      |> Enum.reverse()
 
     playlist = %Media{playlist | segments: playlist_segments ++ new_segments}
 
     %__MODULE__{
       builder
       | timed_segments: timed_segments,
-        to_upload: to_upload ++ complete_segments,
+        to_upload: to_upload ++ uploadable_segments,
         playlist: playlist
     }
   end

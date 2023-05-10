@@ -77,6 +77,37 @@ defmodule HLS.Playlist.Media.BuilderTest do
 
       assert length(segments) == 4
     end
+
+    test "does not produce uploadables if the first timed buffer creates a list of trailing empty uploadables" do
+      # This case covers the situation in which the Builder is used to recover
+      # a playlist in the middle of a stream. If it would emit all empty
+      # uploadables they would override previous segments, probably filled with
+      # content.
+      playlist = Media.new(URI.new!("http://example.com/data/media.m3u8"), 1)
+
+      {uploadables, builder} =
+        playlist
+        |> Builder.new(".ts")
+        # Buffers are allowed to start in a segment and finish in the other one.
+        |> Builder.fit(%{from: 3, to: 4, payload: "a"})
+        |> Builder.take_uploadables()
+
+      assert [
+               %{
+                 payload: [%{from: 3, to: 4, payload: "a"}],
+                 uri: URI.new!("http://example.com/data/media/00003.ts")
+               }
+             ] == uploadables
+
+      # Even though we require just one upload, the playlist should contain
+      # all segments up to that point.
+      segments =
+        builder
+        |> Builder.playlist()
+        |> Media.segments()
+
+      assert length(segments) == 4
+    end
   end
 
   describe "flushing" do
@@ -105,8 +136,7 @@ defmodule HLS.Playlist.Media.BuilderTest do
       {uploadables, builder} =
         playlist
         |> Builder.new(".ts")
-        # Spans over the 2-3 segment but these is no
-        |> Builder.fit(%{from: 1, to: 2.5, payload: <<>>})
+        |> Builder.fit(%{from: 0, to: 2.5, payload: <<>>})
         |> Builder.flush()
         |> Builder.take_uploadables()
 
