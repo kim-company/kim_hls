@@ -5,46 +5,112 @@ defmodule HLS.PlaylistTest do
   alias HLS.Playlist.{Master, Media}
 
   describe "Marshal Media Playlist" do
-    segments =
-      [
-        %Segment{
-          duration: 3.0
-        },
-        %Segment{
-          duration: 2.0
-        }
-      ]
-      |> Enum.with_index()
-      |> Enum.map(fn {seg, index} ->
-        %Segment{
-          seg
-          | uri: URI.new!("data/#{index}.ts"),
-            absolute_sequence: index,
-            relative_sequence: index
-        }
-      end)
+    setup do
+      segments =
+        [
+          %Segment{
+            duration: 3.0
+          },
+          %Segment{
+            duration: 2.0
+          }
+        ]
+        |> Enum.with_index()
+        |> Enum.map(fn {seg, index} ->
+          %Segment{
+            seg
+            | uri: URI.new!("data/#{index}.ts"),
+              absolute_sequence: index,
+              relative_sequence: index
+          }
+        end)
 
-    playlist = %Media{
-      version: 7,
-      target_segment_duration: 3.0,
-      media_sequence_number: 0,
-      finished: false,
-      uri: URI.new!("https://example.com/data.m3u8"),
-      segments: segments
-    }
+      playlist = %Media{
+        version: 7,
+        target_segment_duration: 3.0,
+        media_sequence_number: 0,
+        uri: URI.new!("https://example.com/data.m3u8"),
+        segments: segments
+      }
 
-    marshaled = """
-      #EXTM3U
-      #EXT-X-VERSION:7
-      #EXT-X-TARGETDURATION:3
-      #EXT-X-MEDIA-SEQUENCE:0
-      #EXTINF:3.0,
-      data/0.ts
-      #EXTINF:2.0,
-      data/1.ts
-    """
+      %{playlist: playlist}
+    end
 
-    assert Playlist.marshal(playlist) == String.replace(marshaled, " ", "", global: true)
+    test "when the playlist is finished", %{playlist: playlist} do
+      marshaled = """
+        #EXTM3U
+        #EXT-X-VERSION:7
+        #EXT-X-TARGETDURATION:3
+        #EXT-X-MEDIA-SEQUENCE:0
+        #EXTINF:3.0,
+        data/0.ts
+        #EXTINF:2.0,
+        data/1.ts
+        #EXT-X-ENDLIST
+      """
+
+      playlist = %Media{playlist | finished: true}
+      assert Playlist.marshal(playlist) == String.replace(marshaled, " ", "", global: true)
+    end
+
+    test "when the playlist is not finished", %{playlist: playlist} do
+      marshaled = """
+        #EXTM3U
+        #EXT-X-VERSION:7
+        #EXT-X-TARGETDURATION:3
+        #EXT-X-MEDIA-SEQUENCE:0
+        #EXTINF:3.0,
+        data/0.ts
+        #EXTINF:2.0,
+        data/1.ts
+      """
+
+      # If the playlist is not finished it is assumed to be an EVENT
+      # playlist, meaning that segments MAY be removed in the order
+      # they appeared.
+      playlist = %Media{playlist | finished: false}
+      assert Playlist.marshal(playlist) == String.replace(marshaled, " ", "", global: true)
+    end
+
+    test "when the playlist is EVENT, but finished", %{playlist: playlist} do
+      marshaled = """
+        #EXTM3U
+        #EXT-X-VERSION:7
+        #EXT-X-PLAYLIST-TYPE:EVENT
+        #EXT-X-TARGETDURATION:3
+        #EXT-X-MEDIA-SEQUENCE:0
+        #EXTINF:3.0,
+        data/0.ts
+        #EXTINF:2.0,
+        data/1.ts
+        #EXT-X-ENDLIST
+      """
+
+      # It means that the playlist may remove segments.
+      playlist = %Media{playlist | type: :event, finished: true}
+      assert Playlist.marshal(playlist) == String.replace(marshaled, " ", "", global: true)
+    end
+
+    test "when the playlist is VOD", %{playlist: playlist} do
+      marshaled = """
+        #EXTM3U
+        #EXT-X-VERSION:7
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXT-X-TARGETDURATION:3
+        #EXT-X-MEDIA-SEQUENCE:0
+        #EXTINF:3.0,
+        data/0.ts
+        #EXTINF:2.0,
+        data/1.ts
+        #EXT-X-ENDLIST
+      """
+
+      # it means that the playlist is both finished (no more segments will be
+      # added), and it is VOD, hence no segments will be removed. The playlist
+      # is now static.
+      playlist = %Media{playlist | finished: true, type: :vod}
+      assert Playlist.marshal(playlist) == String.replace(marshaled, " ", "", global: true)
+    end
   end
 
   describe "Unmarshal Master Playlist" do
@@ -232,6 +298,34 @@ defmodule HLS.PlaylistTest do
 
       manifest = Playlist.unmarshal(content, %Media{})
       assert manifest.finished
+    end
+
+    test "reads media playlist type" do
+      content = """
+      #EXTM3U
+      #EXT-X-VERSION:7
+      #EXT-X-PLAYLIST-TYPE:VOD
+      #EXT-X-TARGETDURATION:10
+      #EXT-X-MEDIA-SEQUENCE:0
+      #EXTINF:10.0,
+      video_segment_0_video_track.ts
+      """
+
+      manifest = Playlist.unmarshal(content, %Media{})
+      assert manifest.type == :vod
+
+      content = """
+      #EXTM3U
+      #EXT-X-VERSION:7
+      #EXT-X-PLAYLIST-TYPE:EVENT
+      #EXT-X-TARGETDURATION:10
+      #EXT-X-MEDIA-SEQUENCE:0
+      #EXTINF:10.0,
+      video_segment_0_video_track.ts
+      """
+
+      manifest = Playlist.unmarshal(content, %Media{})
+      assert manifest.type == :event
     end
 
     test "collects segment tags" do

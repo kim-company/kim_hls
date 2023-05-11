@@ -15,6 +15,7 @@ defmodule HLS.Playlist.Media do
           uri: URI.t() | nil,
           # Indicates that the playlist has become VOD.
           finished: boolean(),
+          type: Tag.PlaylistType.type() | nil,
           segments: [Segment.t()]
         }
 
@@ -22,6 +23,7 @@ defmodule HLS.Playlist.Media do
     :target_segment_duration,
     :uri,
     finished: false,
+    type: nil,
     media_sequence_number: 0,
     version: 7,
     tags: %{},
@@ -30,7 +32,7 @@ defmodule HLS.Playlist.Media do
 
   @spec new(URI.t(), pos_integer()) :: t()
   def new(uri, target_segment_duration) do
-    %__MODULE__{uri: uri, target_segment_duration: target_segment_duration}
+    %__MODULE__{uri: uri, target_segment_duration: target_segment_duration, type: :event}
   end
 
   @doc """
@@ -96,13 +98,19 @@ defimpl HLS.Playlist.Marshaler, for: HLS.Playlist.Media do
   def header_tags_with_values(%HLS.Playlist.Media{
         version: version,
         target_segment_duration: target_segment_duration,
-        media_sequence_number: media_sequence_number
+        media_sequence_number: media_sequence_number,
+        type: type
       }) do
     [
       {Tag.Version, version},
+      if(type == nil,
+        do: nil,
+        else: {Tag.PlaylistType, Tag.PlaylistType.marshal_playlist_type(type)}
+      ),
       {Tag.TargetSegmentDuration, trunc(target_segment_duration)},
       {Tag.MediaSequenceNumber, media_sequence_number}
     ]
+    |> Enum.reject(fn x -> x == nil end)
   end
 end
 
@@ -114,6 +122,7 @@ defimpl HLS.Playlist.Unmarshaler, for: HLS.Playlist.Media do
   def supported_tags(_) do
     [
       Tag.Version,
+      Tag.PlaylistType,
       Tag.TargetSegmentDuration,
       Tag.MediaSequenceNumber,
       Tag.EndList,
@@ -128,10 +137,13 @@ defimpl HLS.Playlist.Unmarshaler, for: HLS.Playlist.Media do
     [segment_duration] = Map.fetch!(tags, Tag.TargetSegmentDuration.id())
     [sequence_number] = Map.fetch!(tags, Tag.MediaSequenceNumber.id())
 
-    finished =
-      case Map.get(tags, Tag.EndList.id()) do
-        nil -> false
-        [endlist] -> endlist.value
+    finished? = Map.has_key?(tags, Tag.EndList.id())
+
+    type =
+      case Map.get(tags, Tag.PlaylistType.id(), nil) do
+        # defaults to PlaylisType EVENT if the tag is not present
+        nil -> nil
+        [playlist_type] -> playlist_type.value
       end
 
     segments =
@@ -160,7 +172,8 @@ defimpl HLS.Playlist.Unmarshaler, for: HLS.Playlist.Media do
         version: version.value,
         target_segment_duration: segment_duration.value,
         media_sequence_number: sequence_number.value,
-        finished: finished,
+        finished: finished?,
+        type: type,
         segments: segments
     }
   end
