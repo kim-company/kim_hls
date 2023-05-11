@@ -23,7 +23,8 @@ defmodule HLS.Playlist.Media.Builder do
           segments: [],
           target_segment_duration: target_segment_duration,
           media_sequence_number: 0,
-          uri: uri
+          uri: uri,
+          type: :event
         },
         segment_extension
       ) do
@@ -142,7 +143,12 @@ defmodule HLS.Playlist.Media.Builder do
       |> Enum.map(fn %{segment: x} -> x end)
       |> Enum.reverse()
 
-    playlist = %Media{playlist | segments: playlist_segments ++ new_segments, finished: true}
+    playlist = %Media{
+      playlist
+      | segments: playlist_segments ++ new_segments,
+        finished: true,
+        type: :vod
+    }
 
     %__MODULE__{
       builder
