@@ -43,12 +43,16 @@ defmodule HLS.Playlist.Media.BuilderTest do
 
       assert [
                %{
-                 payload: [%{from: 1, to: 2, payload: "a"}, %{from: 2, to: 3, payload: "b"}],
-                 uri: URI.new!("http://example.com/data/media/00000.ts")
+                 buffers: [%{from: 1, to: 2, payload: "a"}, %{from: 2, to: 3, payload: "b"}],
+                 uri: URI.new!("http://example.com/data/media/00000.ts"),
+                 from: 0,
+                 to: 3
                },
                %{
-                 payload: [%{from: 3, to: 5, payload: "c"}, %{from: 5, to: 7, payload: "d"}],
-                 uri: URI.new!("http://example.com/data/media/00001.ts")
+                 buffers: [%{from: 3, to: 5, payload: "c"}, %{from: 5, to: 7, payload: "d"}],
+                 uri: URI.new!("http://example.com/data/media/00001.ts"),
+                 from: 3,
+                 to: 6
                }
              ] == uploadables
 
@@ -94,8 +98,10 @@ defmodule HLS.Playlist.Media.BuilderTest do
 
       assert [
                %{
-                 payload: [%{from: 3, to: 4, payload: "a"}],
-                 uri: URI.new!("http://example.com/data/media/00003.ts")
+                 buffers: [%{from: 3, to: 4, payload: "a"}],
+                 uri: URI.new!("http://example.com/data/media/00003.ts"),
+                 from: 3,
+                 to: 4
                }
              ] == uploadables
 
