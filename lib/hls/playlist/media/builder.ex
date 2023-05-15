@@ -22,7 +22,7 @@ defmodule HLS.Playlist.Media.Builder do
         playlist = %Media{
           segments: [],
           target_segment_duration: target_segment_duration,
-          media_sequence_number: 0,
+          media_sequence_number: 1,
           uri: uri,
           type: :event
         },

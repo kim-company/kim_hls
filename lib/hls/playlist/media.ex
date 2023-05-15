@@ -24,7 +24,7 @@ defmodule HLS.Playlist.Media do
     :uri,
     finished: false,
     type: nil,
-    media_sequence_number: 0,
+    media_sequence_number: 1,
     version: 7,
     tags: %{},
     segments: []
