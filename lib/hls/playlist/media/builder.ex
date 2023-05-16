@@ -24,7 +24,10 @@ defmodule HLS.Playlist.Media.Builder do
           target_segment_duration: target_segment_duration,
           media_sequence_number: 1,
           uri: uri,
-          type: :event
+          # https://www.rfc-editor.org/rfc/rfc8216#section-6.2.2 specifies that
+          # live playlists should not contain any playlist-type tag as that does
+          # not allow it to remove segments.
+          type: nil
         },
         segment_extension
       ) do

@@ -32,7 +32,7 @@ defmodule HLS.Playlist.Media do
 
   @spec new(URI.t(), pos_integer()) :: t()
   def new(uri, target_segment_duration) do
-    %__MODULE__{uri: uri, target_segment_duration: target_segment_duration, type: :event}
+    %__MODULE__{uri: uri, target_segment_duration: target_segment_duration, type: nil}
   end
 
   @doc """
