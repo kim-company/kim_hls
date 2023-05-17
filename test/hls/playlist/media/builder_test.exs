@@ -67,7 +67,7 @@ defmodule HLS.Playlist.Media.BuilderTest do
     end)
   end
 
-  describe "does not return any segment" do
+  describe "does not return any uploadable" do
     test "when the next segment is not full", %{playlist: playlist} do
       assert {[], %Builder{}} =
                playlist
@@ -111,6 +111,30 @@ defmodule HLS.Playlist.Media.BuilderTest do
                playlist
                |> Builder.new()
                |> Builder.fit(buffer)
+               |> Builder.pop()
+    end
+
+    test "when it replaces them with empty the empty segment, if the buffer is empty", %{
+      playlist: playlist
+    } do
+      uri = URI.new!("media/empty.vtt")
+
+      assert {[%{segment: %Segment{uri: ^uri}}], %Builder{}} =
+               playlist
+               |> Builder.new(replace_empty_segments_uri: true)
+               |> Builder.fit(%{from: 0, to: 1})
+               |> Builder.pop()
+    end
+
+    test "when it replaces them with empty the empty segment, if the buffer is not empty", %{
+      playlist: playlist
+    } do
+      uri = URI.new!("media/00000.vtt")
+
+      assert {[%{segment: %Segment{uri: ^uri}}], %Builder{}} =
+               playlist
+               |> Builder.new(replace_empty_segments_uri: true)
+               |> Builder.fit(%{from: 0, to: 1, payload: "a"})
                |> Builder.pop()
     end
 

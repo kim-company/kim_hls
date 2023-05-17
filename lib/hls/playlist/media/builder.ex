@@ -18,6 +18,7 @@ defmodule HLS.Playlist.Media.Builder do
   defstruct [
     :playlist,
     :segment_extension,
+    replace_empty_segments_uri: false,
     timed_payloads: [],
     in_flight: %{},
     acknoledged: []
@@ -48,7 +49,8 @@ defmodule HLS.Playlist.Media.Builder do
   def new(playlist, opts) do
     %__MODULE__{
       playlist: playlist,
-      segment_extension: Keyword.get(opts, :segment_extension, ".vtt")
+      segment_extension: Keyword.get(opts, :segment_extension, ".vtt"),
+      replace_empty_segments_uri: Keyword.get(opts, :replace_empty_segments_uri, false)
     }
   end
 
@@ -207,12 +209,38 @@ defmodule HLS.Playlist.Media.Builder do
 
     timed_payloads = Enum.drop(builder.timed_payloads, processed_payloads_count)
 
+    uploadables =
+      if builder.replace_empty_segments_uri do
+        uploadables
+        |> Enum.map(fn uploadable ->
+          if is_empty_uploadable(uploadable) do
+            %{
+              uploadable
+              | segment: %Segment{uploadable.segment | uri: empty_segment_uri(builder)}
+            }
+          else
+            uploadable
+          end
+        end)
+      else
+        uploadables
+      end
+
     in_flight =
       Enum.reduce(uploadables, builder.in_flight, fn %{ref: ref, segment: segment}, acc ->
         Map.put(acc, ref, segment)
       end)
 
     {uploadables, %__MODULE__{builder | timed_payloads: timed_payloads, in_flight: in_flight}}
+  end
+
+  defp is_empty_uploadable(%{payloads: payloads}) do
+    data =
+      payloads
+      |> Enum.map(&Map.get(&1, :payload, <<>>))
+      |> Enum.join()
+
+    data == <<>>
   end
 
   @doc """
