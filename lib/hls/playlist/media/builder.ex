@@ -8,55 +8,96 @@ defmodule HLS.Playlist.Media.Builder do
           payload: binary()
         }
 
-  @type timed_segment :: %{
+  @type uploadable :: %{
           from: float(),
           to: float(),
           segment: Segment.t(),
-          acc: [timed_payload()]
+          payloads: [timed_payload()]
         }
 
   defstruct [
     :playlist,
-    segment_relative_uri_fun: &__MODULE__.build_segment_relative_uri/1,
-    timed_payloads: []
-    # timed_segments: [],
-    # to_upload: [],
-    # closed: false,
-    # filter_uploadables_from: nil
+    :segment_extension,
+    timed_payloads: [],
+    in_flight: %{},
+    acknoledged: []
   ]
-
-  def build_segment_relative_uri(sequence) do
-    sequence
-    |> to_string()
-    |> String.pad_leading(5, "0")
-    |> List.wrap()
-    |> Enum.concat([".vtt"])
-    |> Enum.join()
-    |> URI.new!()
-  end
 
   @doc """
   Creates a new Media playlist builder validating the input playlist. Accepts
   playlists that both not yet finished and contain all segments required to
   compute their playback duration, i.e., their media_sequence_number is zero.
   """
-  def new(%Media{finished: true}) do
+  def new(playlist, opts \\ [])
+
+  def new(%Media{finished: true}, _opts) do
     raise "not with a finished playlist"
   end
 
-  def new(%Media{media_sequence_number: seq}) when seq != 0 do
+  def new(%Media{media_sequence_number: seq}, _opts) when seq != 0 do
     raise "not with a media_sequence_number which is not zero, it is not possible to compute the playlist's actual playback "
   end
 
   # https://www.rfc-editor.org/rfc/rfc8216#section-6.2.2 specifies that
   # live playlists should not contain any playlist-type tag as that does
   # not allow it to remove segments.
-  def new(%Media{type: type}) when type in [:vod, :event] do
+  def new(%Media{type: type}, _opts) when type in [:vod, :event] do
     raise "not with a playlist of type :vod|:event"
   end
 
-  def new(playlist) do
-    %__MODULE__{playlist: playlist}
+  def new(playlist, opts) do
+    %__MODULE__{
+      playlist: playlist,
+      segment_extension: Keyword.get(opts, :segment_extension, ".vtt")
+    }
+  end
+
+  def segment_uri(builder, sequence) do
+    name = build_segment_name(builder, sequence)
+    build_segment_uri(builder, name)
+  end
+
+  def empty_segment_uri(builder) do
+    build_segment_uri(builder, "empty" <> builder.segment_extension)
+  end
+
+  @doc """
+  Returns the playlist stored in the builder.
+  """
+  def playlist(%__MODULE__{playlist: playlist}), do: playlist
+
+  @doc """
+  Acknoledges that the segment uploadable referenced by ref has been successfully stored
+  at the location pointed by its URI, meaning that it is now accessible for final users.
+  After this action, the segments is included in the playlist if it is the next in the queue.
+  """
+  def ack(builder, ref) do
+    {segment, in_flight} = Map.pop!(builder.in_flight, ref)
+
+    builder = %__MODULE__{
+      builder
+      | in_flight: in_flight,
+        acknoledged: [segment | builder.acknoledged]
+    }
+
+    consolidate_playlist(builder)
+  end
+
+  @doc """
+  Negatively acknoledges the processing of the uploadable referenced by ref. Its relative
+  segment is going to be added to the playlist as an empty one.
+  """
+  def nack(builder, ref) do
+    {segment, in_flight} = Map.pop!(builder.in_flight, ref)
+    segment = %Segment{segment | uri: empty_segment_uri(builder)}
+
+    builder = %__MODULE__{
+      builder
+      | in_flight: in_flight,
+        acknoledged: [segment | builder.acknoledged]
+    }
+
+    consolidate_playlist(builder)
   end
 
   @doc """
@@ -93,224 +134,166 @@ defmodule HLS.Playlist.Media.Builder do
     {[], builder}
   end
 
-  def pop(builder, _opts) do
-    {[], builder}
+  def pop(builder, opts) do
     # Create the list of segments which can contain the timed_payloads. Return
     # the ones that are complete or all of them, if forced. Create a reference
     # of each segment and store it. When the segments are (na)acknoledged, add
     # them to the playlist.
 
-    # force? = Keyword.get(opts, :force, false)
+    force? = Keyword.get(opts, :force, false)
+    segment_duration = builder.playlist.target_segment_duration
 
-    # playback =
-    #   segments
-    #   |> Enum.map(fn %Segment{duration: duration} -> duration end)
-    #   |> Enum.sum()
+    playlist_playback =
+      builder.playlist.segments
+      |> Enum.map(fn %Segment{duration: duration} -> duration end)
+      |> Enum.sum()
 
-    # acc
-    # |> Enum.sort(fn %{from: left}, {from: right} -> left < right end)
-    # |> 
+    segments_count = Enum.count(builder.playlist.segments)
+
+    %{to: payloads_playback} =
+      builder.timed_payloads
+      |> Enum.sort(fn %{from: left}, %{from: right} -> left < right end)
+      |> List.last()
+
+    # How many segments are needed to fit the payloads? As soon as we have some
+    # timed payloads here, at least 1.
+    n = ceil((payloads_playback - playlist_playback) / builder.playlist.target_segment_duration)
+
+    uploadables =
+      Range.new(0, n - 1)
+      |> Enum.reduce([], fn seq, acc ->
+        from = playlist_playback + segment_duration * seq
+        to = from + segment_duration
+        [%{from: from, to: to, payloads: [], segment: nil} | acc]
+      end)
+      |> Enum.reverse()
+      |> Enum.with_index(segments_count)
+      |> Enum.map(fn {uploadable, index} ->
+        segment = %Segment{
+          duration: segment_duration,
+          relative_sequence: index,
+          absolute_sequence: index,
+          uri: segment_uri(builder, index)
+        }
+
+        %{uploadable | segment: segment}
+      end)
+      |> fit_payloads_into_segments(builder.timed_payloads, [])
+      |> Enum.map(&Map.put(&1, :ref, make_ref()))
+
+    uploadables =
+      if not force? and not Enum.empty?(uploadables) do
+        # Return only those segments that are complete. As soon as we create just
+        # the exact amount of segments required to fit the timed payloads, only the
+        # last segment needs a check.
+        last = List.last(uploadables)
+
+        if is_full(last) do
+          uploadables
+        else
+          Enum.drop(uploadables, -1)
+        end
+      else
+        uploadables
+      end
+
+    # count the number of timed_payloads that have been fit inside
+    # the segments: those ones are gone.
+    processed_payloads_count =
+      uploadables
+      |> Enum.map(fn %{payloads: acc} -> acc end)
+      |> List.flatten()
+      |> Enum.count()
+
+    timed_payloads = Enum.drop(builder.timed_payloads, processed_payloads_count)
+
+    in_flight =
+      Enum.reduce(uploadables, builder.in_flight, fn %{ref: ref, segment: segment}, acc ->
+        Map.put(acc, ref, segment)
+      end)
+
+    {uploadables, %__MODULE__{builder | timed_payloads: timed_payloads, in_flight: in_flight}}
   end
 
-  # def fit(%__MODULE__{closed: true}, payload) do
-  #   raise "Cannot fit timed payload #{inspect(payload)} into a finished playlist"
-  # end
+  @doc """
+  Combines fit and pop action in one call.
+  """
+  def fit_and_pop(builder, payload, opts \\ []) do
+    builder
+    |> fit(payload)
+    |> pop(opts)
+  end
 
-  #   def fit(builder = %__MODULE__{filter_uploadables_from: nil}, timed_payload = %{from: from}) do
-  #     fit(%__MODULE__{builder | filter_uploadables_from: from}, timed_payload)
-  #   end
+  defp is_full(%{payloads: []}), do: false
 
-  #   def fit(
-  #         builder = %__MODULE__{
-  #           timed_segments: segments,
-  #           to_upload: to_upload,
-  #           filter_uploadables_from: filter_uploadables_from,
-  #           playlist:
-  #             playlist = %Media{
-  #               segments: playlist_segments
-  #             }
-  #         },
-  #         timed_payload = %{from: from}
-  #       ) do
-  #     segment_from = current_segment_from(segments)
-  #     segment_to = current_segment_to(segments)
+  defp is_full(%{to: to, payloads: payloads}) do
+    %{to: payloads_to} = List.last(payloads)
+    payloads_to >= to
+  end
 
-  #     # After this check we're ensured that the last timed segments can hold the current buffer.
-  #     # Previous segments can be considered complete!
-  #     [last_timed_segment | rest] =
-  #       cond do
-  #         from < segment_from ->
-  #           raise "Cannot fit timed payload #{inspect(timed_payload)} into current segment which starts at #{inspect(segment_from)}"
+  defp fit_payloads_into_segments([], [], acc), do: Enum.reverse(acc)
 
-  #         from >= segment_to ->
-  #           extend_timed_segments_till(segments, from, builder)
+  defp fit_payloads_into_segments([segment_head | segments], [], acc) do
+    # Once we finish the payloads, fast forward.
+    fit_payloads_into_segments(segments, [], [segment_head | acc])
+  end
 
-  #         true ->
-  #           # Segments can already hold this buffer.
-  #           segments
-  #       end
+  defp fit_payloads_into_segments([segment_head | segments], [payload_head | payloads], acc) do
+    if payload_head.from < segment_head.to do
+      # This payload fits in the segment. It does not mean that the segment is complete.
+      segment_head = update_in(segment_head, [:payloads], fn acc -> acc ++ [payload_head] end)
+      fit_payloads_into_segments([segment_head | segments], payloads, acc)
+    else
+      # the current head is complete.
+      fit_payloads_into_segments(segments, [payload_head | payloads], [segment_head | acc])
+    end
+  end
 
-  #     last_timed_segment =
-  #       update_in(last_timed_segment, [:acc], fn acc -> [timed_payload | acc] end)
+  # Updates playlist segments.
+  defp consolidate_playlist(builder) do
+    last_relative_sequence =
+      builder.playlist.segments
+      |> Enum.map(fn %Segment{relative_sequence: x} -> x end)
+      |> List.last()
 
-  #     # Here we're checking wether the last buffer we put in the last segment is
-  #     # going to be the last one for it. It happens when the buffer finishes after
-  #     # the segment duration (or at its boundary)
-  #     last_to = real_segment_to(last_timed_segment)
-  #     segment_to = current_segment_to([last_timed_segment])
+    next_sequence = if last_relative_sequence != nil, do: last_relative_sequence + 1, else: 0
 
-  #     {complete_segments, timed_segments} =
-  #       if last_to >= segment_to do
-  #         all = [last_timed_segment | rest]
+    ready =
+      builder.acknoledged
+      |> Enum.sort(fn %Segment{relative_sequence: left}, %Segment{relative_sequence: right} ->
+        left < right
+      end)
+      # Pair each segment with their expected relative sequence number
+      |> Enum.with_index(next_sequence)
+      # While the numbers match take them. If there are holes in the sequence
+      # in means some uploadable has not been acknoledged yet.
+      |> Enum.take_while(fn {%Segment{relative_sequence: x}, y} -> x == y end)
+      |> Enum.map(fn {x, _} -> x end)
 
-  #         timed_segments =
-  #           [last_timed_segment]
-  #           |> extend_timed_segments_till(last_to, builder)
-  #           |> Enum.slice(Range.new(0, -2))
+    playlist = %Media{builder.playlist | segments: builder.playlist.segments ++ ready}
+    acknoledged = Enum.drop(builder.acknoledged, length(ready))
+    %__MODULE__{builder | playlist: playlist, acknoledged: acknoledged}
+  end
 
-  #         if length(timed_segments) > 1 do
-  #           # It means that the last segment contained something that
-  #           # spans over multiple segment, which we consider ready.
-  #           [h | ready] = timed_segments
-  #           {ready ++ all, [h]}
-  #         else
-  #           {all, timed_segments}
-  #         end
-  #       else
-  #         {rest, [last_timed_segment]}
-  #       end
+  defp build_segment_uri(builder, name) do
+    path = builder.playlist.uri.path
 
-  #     complete_segments = Enum.reverse(complete_segments)
+    root =
+      path
+      |> Path.basename(path)
+      |> String.trim_trailing(Path.extname(path))
 
-  #     uploadable_segments =
-  #       Enum.drop_while(complete_segments, fn %{to: to} -> to <= filter_uploadables_from end)
+    [root, name]
+    |> Path.join()
+    |> URI.new!()
+  end
 
-  #     new_segments =
-  #       complete_segments
-  #       |> Enum.map(fn %{segment: x} -> x end)
-
-  #     playlist = %Media{playlist | segments: playlist_segments ++ new_segments}
-
-  #     %__MODULE__{
-  #       builder
-  #       | timed_segments: timed_segments,
-  #         to_upload: to_upload ++ uploadable_segments,
-  #         playlist: playlist
-  #     }
-  #   end
-
-  #   def flush(
-  #         builder = %__MODULE__{
-  #           timed_segments: timed_segments,
-  #           to_upload: to_upload,
-  #           playlist: playlist = %Media{segments: playlist_segments}
-  #         }
-  #       ) do
-  #     timed_segments = Enum.drop_while(timed_segments, fn %{acc: acc} -> Enum.empty?(acc) end)
-
-  #     new_segments =
-  #       timed_segments
-  #       |> Enum.map(fn %{segment: x} -> x end)
-  #       |> Enum.reverse()
-
-  #     playlist = %Media{
-  #       playlist
-  #       | segments: playlist_segments ++ new_segments,
-  #         finished: true,
-  #         type: :vod
-  #     }
-
-  #     %__MODULE__{
-  #       builder
-  #       | timed_segments: [],
-  #         to_upload: to_upload ++ Enum.reverse(timed_segments),
-  #         playlist: playlist,
-  #         closed: true
-  #     }
-  #   end
-
-  #   def playlist(%__MODULE__{playlist: playlist}), do: playlist
-
-  #   def take_uploadables(builder = %__MODULE__{to_upload: to_upload, playlist: playlist}) do
-  #     uploadables =
-  #       to_upload
-  #       |> Enum.map(fn %{segment: segment, acc: acc, from: from, to: to} ->
-  #         %{
-  #           buffers: Enum.reverse(acc),
-  #           uri: Media.build_segment_uri(playlist.uri, segment.uri),
-  #           from: from,
-  #           to: to
-  #         }
-  #       end)
-
-  #     {uploadables, %__MODULE__{builder | to_upload: []}}
-  #   end
-
-  #   defp extend_timed_segments_till(
-  #          segments = [%{to: segment_to, segment: segment} | _],
-  #          from,
-  #          builder = %{
-  #            segment_extension: extension,
-  #            playlist: %Media{uri: uri, target_segment_duration: duration}
-  #          }
-  #        )
-  #        when from >= segment_to do
-  #     next_segment = generate_next_segment(segment, duration, uri, extension)
-
-  #     segments = [
-  #       %{from: segment_to, to: segment_to + duration, segment: next_segment, acc: []}
-  #       | segments
-  #     ]
-
-  #     extend_timed_segments_till(segments, from, builder)
-  #   end
-
-  #   defp extend_timed_segments_till(segments, _from, _builder) do
-  #     segments
-  #   end
-
-  #   defp current_segment_from([%{from: from} | _]), do: from
-  #   defp current_segment_to([%{to: to} | _]), do: to
-
-  #   defp real_segment_to(%{acc: [%{to: to} | _]}), do: to
-
-  #   defp generate_first_segment(target_segment_duration, media_playlist_uri, segment_extension) do
-  #     %Segment{
-  #       duration: target_segment_duration,
-  #       relative_sequence: 0,
-  #       absolute_sequence: 0
-  #     }
-  #     |> fill_segment_uri(media_playlist_uri, segment_extension)
-  #   end
-
-  #   defp generate_next_segment(
-  #          %Segment{
-  #            relative_sequence: relative_sequence,
-  #            absolute_sequence: absolute_sequence
-  #          },
-  #          duration,
-  #          media_playlist_uri,
-  #          segment_extension
-  #        ) do
-  #     %Segment{
-  #       duration: duration,
-  #       relative_sequence: relative_sequence + 1,
-  #       absolute_sequence: absolute_sequence + 1
-  #     }
-  #     |> fill_segment_uri(media_playlist_uri, segment_extension)
-  #   end
-
-  #   defp fill_segment_uri(segment = %Segment{absolute_sequence: seq}, %URI{path: path}, extension) do
-  #     root =
-  #       path
-  #       |> Path.basename(path)
-  #       |> String.trim_trailing(Path.extname(path))
-
-  #     uri =
-  #       [root, filename]
-  #       |> Path.join()
-  #       |> URI.new!()
-
-  #     %Segment{segment | uri: uri}
-  #   end
+  defp build_segment_name(%__MODULE__{segment_extension: extension}, sequence) do
+    sequence
+    |> to_string()
+    |> String.pad_leading(5, "0")
+    |> List.wrap()
+    |> Enum.concat([extension])
+    |> Enum.join()
+  end
 end

@@ -75,177 +75,194 @@ defmodule HLS.Playlist.Media.BuilderTest do
                |> Builder.fit(%{from: 0, to: 0.5})
                |> Builder.pop()
     end
+
+    test "when the playlist contains segments and the new segment is not full", %{
+      playlist: playlist
+    } do
+      segments = [
+        %Segment{uri: URI.new!("0.txt"), relative_sequence: 0, duration: 1}
+      ]
+
+      playlist = %Media{playlist | segments: segments}
+
+      assert {[], %Builder{}} =
+               playlist
+               |> Builder.new()
+               |> Builder.fit(%{from: 1, to: 1.5})
+               |> Builder.pop()
+    end
   end
 
   describe "returns complete segments" do
     test "when forced", %{playlist: playlist} do
       buffer = %{from: 0, to: 0.5}
 
-      expected_payload = %{
-        uri: URI.new!("s3://bucket/media/00000.vtt"),
-        from: 0,
-        to: 1,
-        buffers: [buffer]
-      }
-
-      assert {[{_, ^expected_payload}], %Builder{}} =
+      assert {[%{from: 0, to: 1, payloads: [^buffer]}], %Builder{}} =
                playlist
                |> Builder.new()
                |> Builder.fit(buffer)
                |> Builder.pop(force: true)
     end
+
+    test "when they fill their segment", %{playlist: playlist} do
+      buffer = %{from: 0, to: 1}
+
+      assert {[%{from: 0, to: 1, payloads: [^buffer]}], %Builder{}} =
+               playlist
+               |> Builder.new()
+               |> Builder.fit(buffer)
+               |> Builder.pop()
+    end
+
+    test "when they fill their segment and more", %{playlist: playlist} do
+      buffer = %{from: 0, to: 1.5}
+
+      assert {[%{from: 0, to: 1, payloads: [^buffer]}], %Builder{}} =
+               playlist
+               |> Builder.new()
+               |> Builder.fit(buffer)
+               |> Builder.pop()
+    end
+
+    test "when they span over multiple segments", %{playlist: playlist} do
+      buffer = %{from: 1, to: 2}
+
+      assert {[%{from: 0, to: 1, payloads: []}, %{from: 1, to: 2, payloads: [^buffer]}],
+              %Builder{}} =
+               playlist
+               |> Builder.new()
+               |> Builder.fit(buffer)
+               |> Builder.pop()
+    end
+
+    test "when they span over multiple segments w/o completing the last segment", %{
+      playlist: playlist
+    } do
+      buffer = %{from: 1, to: 1.5}
+
+      assert {[%{from: 0, to: 1, payloads: []}], %Builder{}} =
+               playlist
+               |> Builder.new()
+               |> Builder.fit(buffer)
+               |> Builder.pop()
+    end
   end
 
-  #   describe "take uploadables" do
-  #   end
+  test "returned segments have a proper relative URI", %{playlist: playlist} do
+    buffer = %{from: 0, to: 1}
 
-  #   describe "without flushing" do
-  #     test "flushes when the payload finishes in the next segment window" do
-  #       playlist = Media.new(URI.new!("s3://bucket/media.m3u8"), 1)
+    assert {[%{segment: segment}], %Builder{}} =
+             playlist
+             |> Builder.new()
+             |> Builder.fit(buffer)
+             |> Builder.pop()
 
-  #       {uploadables, builder} =
-  #         playlist
-  #         |> Builder.new(".ts")
-  #         # Buffers are allowed to start in a segment and finish in the other one.
-  #         |> Builder.fit(%{from: 0, to: 1.5, payload: <<>>})
-  #         |> Builder.take_uploadables()
+    assert segment.uri == URI.new!("media/00000.vtt")
+  end
 
-  #       playlist = Builder.playlist(builder)
-  #       segments = Media.segments(playlist)
+  describe "segments are not consolidated in the playlist" do
+    test "when new buffers are fit in the builder", %{playlist: playlist} do
+      buffer = %{from: 0, to: 1}
 
-  #       assert length(segments) == 1
-  #       assert length(uploadables) == 1
-  #     end
+      playlist =
+        playlist
+        |> Builder.new()
+        |> Builder.fit(buffer)
+        |> Builder.playlist()
 
-  #     test "take uploadables" do
-  #       playlist = Media.new(URI.new!("http://example.com/data/media.m3u8"), 3)
+      assert playlist.segments == []
+    end
 
-  #       {uploadables, builder} =
-  #         playlist
-  #         |> Builder.new(".ts")
-  #         # Buffers are allowed to start in a segment and finish in the other one.
-  #         |> Builder.fit(%{from: 1, to: 2, payload: "a"})
-  #         |> Builder.fit(%{from: 2, to: 3, payload: "b"})
-  #         # This buffer triggers a segment window switch forward, hence the previous
-  #         # one is considered complete.
-  #         |> Builder.fit(%{from: 3, to: 5, payload: "c"})
-  #         |> Builder.fit(%{from: 5, to: 7, payload: "d"})
-  #         |> Builder.fit(%{from: 8, to: 8.5, payload: "e"})
-  #         |> Builder.take_uploadables()
+    test "when segments are popped out of the builder", %{playlist: playlist} do
+      buffer = %{from: 0, to: 1}
 
-  #       assert length(uploadables) == 2
+      {uploadables, builder} =
+        playlist
+        |> Builder.new()
+        |> Builder.fit_and_pop(buffer)
 
-  #       assert [
-  #                %{
-  #                  buffers: [%{from: 1, to: 2, payload: "a"}, %{from: 2, to: 3, payload: "b"}],
-  #                  uri: URI.new!("http://example.com/data/media/00000.ts"),
-  #                  from: 0,
-  #                  to: 3
-  #                },
-  #                %{
-  #                  buffers: [%{from: 3, to: 5, payload: "c"}, %{from: 5, to: 7, payload: "d"}],
-  #                  uri: URI.new!("http://example.com/data/media/00001.ts"),
-  #                  from: 3,
-  #                  to: 6
-  #                }
-  #              ] == uploadables
+      assert length(uploadables) == 1
+      assert Builder.playlist(builder).segments == []
+    end
 
-  #       playlist = Builder.playlist(builder)
-  #       segments = Media.segments(playlist)
+    test "when we use a reference that does not exist", %{playlist: playlist} do
+      builder = Builder.new(playlist)
+      assert_raise(KeyError, fn -> Builder.ack(builder, make_ref()) end)
+      assert_raise(KeyError, fn -> Builder.nack(builder, make_ref()) end)
+    end
+  end
 
-  #       # The other one is still pending.
-  #       assert length(segments) == 2
-  #     end
+  describe "segments are consolidated" do
+    test "on positive acknoledgement", %{playlist: playlist} do
+      buffer = %{from: 0, to: 1}
 
-  #     test "produces empty segments if cues span more than one segment" do
-  #       playlist = Media.new(URI.new!("http://example.com/data/media.m3u8"), 1)
+      {[%{ref: ref, segment: segment}], builder} =
+        playlist
+        |> Builder.new()
+        |> Builder.fit_and_pop(buffer)
 
-  #       {_uploadables, builder} =
-  #         playlist
-  #         |> Builder.new(".ts")
-  #         # Buffers are allowed to start in a segment and finish in the other one.
-  #         |> Builder.fit(%{from: 0, to: 3, payload: "a"})
-  #         |> Builder.fit(%{from: 3, to: 4, payload: "b"})
-  #         |> Builder.take_uploadables()
+      playlist =
+        builder
+        |> Builder.ack(ref)
+        |> Builder.playlist()
 
-  #       segments =
-  #         builder
-  #         |> Builder.playlist()
-  #         |> Media.segments()
+      assert playlist.segments == [segment]
+    end
 
-  #       assert length(segments) == 4
-  #     end
+    test "on positive acknoledgement of multiple segments", %{playlist: playlist} do
+      buffer = %{from: 0, to: 2}
 
-  #     test "does not produce uploadables if the first timed buffer creates a list of trailing empty uploadables" do
-  #       # This case covers the situation in which the Builder is used to recover
-  #       # a playlist in the middle of a stream. If it would emit all empty
-  #       # uploadables they would override previous segments, probably filled with
-  #       # content.
-  #       playlist = Media.new(URI.new!("http://example.com/data/media.m3u8"), 1)
+      {uploadables, builder} =
+        playlist
+        |> Builder.new()
+        |> Builder.fit_and_pop(buffer)
 
-  #       {uploadables, builder} =
-  #         playlist
-  #         |> Builder.new(".ts")
-  #         # Buffers are allowed to start in a segment and finish in the other one.
-  #         |> Builder.fit(%{from: 3, to: 4, payload: "a"})
-  #         |> Builder.take_uploadables()
+      playlist =
+        uploadables
+        |> Enum.reduce(builder, fn %{ref: ref}, builder -> Builder.ack(builder, ref) end)
+        |> Builder.playlist()
 
-  #       assert [
-  #                %{
-  #                  buffers: [%{from: 3, to: 4, payload: "a"}],
-  #                  uri: URI.new!("http://example.com/data/media/00003.ts"),
-  #                  from: 3,
-  #                  to: 4
-  #                }
-  #              ] == uploadables
+      assert playlist.segments == Enum.map(uploadables, fn %{segment: x} -> x end)
+    end
 
-  #       # Even though we require just one upload, the playlist should contain
-  #       # all segments up to that point.
-  #       segments =
-  #         builder
-  #         |> Builder.playlist()
-  #         |> Media.segments()
+    test "on positive acknoledgement with previously consolidated segments", %{playlist: playlist} do
+      segments = [
+        %Segment{uri: URI.new!("0.txt"), relative_sequence: 0, duration: 1},
+        %Segment{uri: URI.new!("1.txt"), relative_sequence: 1, duration: 1}
+      ]
 
-  #       assert length(segments) == 4
-  #     end
-  #   end
+      playlist = %Media{playlist | segments: segments}
 
-  #   describe "flushing" do
-  #     test "fits one payload in the future" do
-  #       playlist = Media.new(URI.new!("http://example.com/data/media.m3u8"), 3)
+      {uploadables, builder} =
+        playlist
+        |> Builder.new()
+        |> Builder.fit_and_pop(%{from: 2, to: 3})
 
-  #       builder =
-  #         playlist
-  #         |> Builder.new(".ts")
-  #         # Buffers are allowed to start in a segment and finish in the other one.
-  #         |> Builder.fit(%{from: 4, to: 5, payload: <<>>})
-  #         |> Builder.flush()
+      playlist =
+        uploadables
+        |> Enum.reduce(builder, fn %{ref: ref}, builder -> Builder.ack(builder, ref) end)
+        |> Builder.playlist()
 
-  #       playlist = Builder.playlist(builder)
-  #       segments = Media.segments(playlist)
+      assert playlist.segments == segments ++ Enum.map(uploadables, fn %{segment: x} -> x end)
+    end
 
-  #       assert length(segments) == 2
-  #       assert Media.compute_playlist_duration(playlist) == 6
-  #       assert Enum.map(segments, fn %Segment{absolute_sequence: x} -> x end) == [0, 1]
-  #       refute Enum.any?(segments, fn %Segment{uri: x} -> x == nil end)
-  #     end
+    test "on negative-acknoledgment, the empty segment is inserted in the playlist", %{
+      playlist: playlist
+    } do
+      buffer = %{from: 0, to: 1, payload: "hello"}
 
-  #     test "does not produce empty trailing segments if no data has been received for them" do
-  #       playlist = Media.new(URI.new!("s3://bucket/media.m3u8"), 1)
+      {[%{ref: ref}], builder} =
+        playlist
+        |> Builder.new()
+        |> Builder.fit_and_pop(buffer)
 
-  #       {uploadables, builder} =
-  #         playlist
-  #         |> Builder.new(".ts")
-  #         |> Builder.fit(%{from: 0, to: 2.5, payload: <<>>})
-  #         |> Builder.flush()
-  #         |> Builder.take_uploadables()
+      playlist =
+        builder
+        |> Builder.nack(ref)
+        |> Builder.playlist()
 
-  #       playlist = Builder.playlist(builder)
-  #       segments = Media.segments(playlist)
-
-  #       assert length(segments) == 2
-  #       assert length(uploadables) == 2
-  #     end
-  #   end
-  # end
+      expected_uri = URI.new!("media/empty.vtt")
+      assert [%Segment{uri: ^expected_uri, duration: 1}] = playlist.segments
+    end
+  end
 end
