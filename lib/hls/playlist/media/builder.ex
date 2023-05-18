@@ -145,6 +145,9 @@ defmodule HLS.Playlist.Media.Builder do
     force? = Keyword.get(opts, :force, false)
     segment_duration = builder.playlist.target_segment_duration
 
+    timed_payloads =
+      Enum.sort(builder.timed_payloads, fn %{from: left}, %{from: right} -> left < right end)
+
     playlist_playback =
       builder.playlist.segments
       |> Enum.map(fn %Segment{duration: duration} -> duration end)
@@ -152,10 +155,7 @@ defmodule HLS.Playlist.Media.Builder do
 
     segments_count = Enum.count(builder.playlist.segments)
 
-    %{to: payloads_playback} =
-      builder.timed_payloads
-      |> Enum.sort(fn %{from: left}, %{from: right} -> left < right end)
-      |> List.last()
+    %{to: payloads_playback} = List.last(timed_payloads)
 
     # How many segments are needed to fit the payloads? As soon as we have some
     # timed payloads here, at least 1.
@@ -180,7 +180,7 @@ defmodule HLS.Playlist.Media.Builder do
 
         %{uploadable | segment: segment}
       end)
-      |> fit_payloads_into_segments(builder.timed_payloads, [])
+      |> fit_payloads_into_segments(timed_payloads, [])
       |> Enum.map(&Map.put(&1, :ref, make_ref()))
 
     uploadables =

@@ -184,6 +184,20 @@ defmodule HLS.Playlist.Media.BuilderTest do
     assert segment.uri == URI.new!("media/00000.vtt")
   end
 
+  test "segment's contents are sorted in the correct order", %{playlist: playlist} do
+    assert {[%{payloads: payloads}], %Builder{}} =
+             playlist
+             |> Builder.new()
+             |> Builder.fit(%{from: 0, to: 0.5})
+             |> Builder.fit(%{from: 0.5, to: 1})
+             |> Builder.pop()
+
+    assert payloads == [
+             %{from: 0, to: 0.5},
+             %{from: 0.5, to: 1}
+           ]
+  end
+
   describe "segments are not consolidated in the playlist" do
     test "when new buffers are fit in the builder", %{playlist: playlist} do
       buffer = %{from: 0, to: 1}
