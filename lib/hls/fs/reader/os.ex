@@ -13,3 +13,8 @@ defimpl HLS.FS.Reader, for: HLS.FS.OS do
   @impl true
   def exists?(_, %URI{path: path}), do: File.exists?(path)
 end
+
+defimpl HLS.FS.Writer, for: HLS.FS.OS do
+  @impl true
+  def write(_, %URI{path: path}, payload, _), do: File.write(path, payload)
+end
