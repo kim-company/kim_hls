@@ -16,5 +16,12 @@ end
 
 defimpl HLS.FS.Writer, for: HLS.FS.OS do
   @impl true
-  def write(_, %URI{path: path}, payload, _), do: File.write(path, payload)
+  def write(_, %URI{path: path}, payload, _) do
+    :ok =
+      path
+      |> Path.dirname()
+      |> File.mkdir_p()
+
+    File.write(path, payload)
+  end
 end
