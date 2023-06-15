@@ -19,7 +19,22 @@ defmodule HLS.Playlist.Master do
   def variant_streams(master = %__MODULE__{streams: streams}) do
     streams
     |> Enum.map(fn stream ->
-      %VariantStream{stream | uri: build_media_uri(master.uri, stream.uri)}
+      uri = build_media_uri(master.uri, stream.uri)
+
+      alts =
+        stream.alternatives
+        |> Enum.map(fn {key, renditions} ->
+          renditions =
+            Enum.map(renditions, fn rendition ->
+              uri = build_media_uri(master.uri, rendition.uri)
+              %HLS.AlternativeRendition{rendition | uri: uri}
+            end)
+
+          {key, renditions}
+        end)
+        |> Enum.into(%{})
+
+      %VariantStream{stream | uri: uri, alternatives: alts}
     end)
   end
 
