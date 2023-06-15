@@ -207,7 +207,7 @@ defmodule HLS.Playlist.Media.Builder do
       |> List.flatten()
       |> Enum.count()
 
-    timed_payloads = Enum.drop(builder.timed_payloads, processed_payloads_count)
+    timed_payloads = Enum.drop(timed_payloads, processed_payloads_count)
 
     uploadables =
       if builder.replace_empty_segments_uri do
