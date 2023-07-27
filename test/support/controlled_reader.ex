@@ -3,11 +3,15 @@ defmodule Support.ControlledReader do
 
   def new(opts \\ []) do
     opts =
-      Keyword.validate!(opts, [
-        :initial,
+      Keyword.validate!(opts,
+        initial: 1,
         max: 1,
         target_duration: 1
-      ])
+      )
+
+    if opts[:initial] <= 0 do
+      raise "Initial segments cannot be <= 0"
+    end
 
     {:ok, pid} =
       Agent.start(fn ->
@@ -37,13 +41,13 @@ defimpl HLS.FS.Reader, for: Support.ControlledReader do
     #EXTM3U
     #EXT-X-VERSION:7
     #EXT-X-TARGETDURATION:#{config.target_duration}
-    #EXT-X-MEDIA-SEQUENCE:0
+    #EXT-X-MEDIA-SEQUENCE:1
     """
 
     calls = config.calls
 
     segs =
-      Enum.map(Range.new(0, calls + config.initial), fn seq ->
+      Enum.map(Range.new(1, calls + config.initial), fn seq ->
         """
         #EXTINF:0.89,
         video_segment_#{seq}_video_720x480.ts

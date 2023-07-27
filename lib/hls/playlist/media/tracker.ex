@@ -62,6 +62,20 @@ defmodule HLS.Playlist.Media.Tracker do
     playlist = read_media_playlist(state.reader, uri)
     segs = Media.segments(playlist)
 
+    if length(segs) < @max_initial_live_segments and !playlist.finished do
+      # wait for some more segments to be listed in the playlist to
+      # avoid playback stalls.
+      wait = playlist.target_segment_duration * 1_000
+      Process.send_after(self(), {:refresh, tracking}, wait)
+      {:noreply, state}
+    else
+      send_updates(tracking, state, playlist)
+    end
+  end
+
+  defp send_updates(tracking, state, playlist) do
+    segs = Media.segments(playlist)
+
     # Determine initial sequence number, sending the start_of_track message if
     # needed.
     tracking =

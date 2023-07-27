@@ -48,20 +48,16 @@ defmodule HLS.Playlist.Media.TrackerTest do
       :ok = Tracker.stop(pid)
     end
 
-    test "keeps on sending updates when the playlist does" do
-      reader = Support.ControlledReader.new(initial: 1, target_duration: 1)
+    test "Waits for the min number of HLS segments to be available before starting on a live playlist" do
+      reader = Support.ControlledReader.new(initial: 1, target_duration: 1, max: 4)
       {:ok, pid} = Tracker.start_link(reader)
       ref = Tracker.follow(pid, @media_uri)
 
-      assert_receive {:segment, ^ref, %Segment{absolute_sequence: 0}}, 200
-      assert_receive {:segment, ^ref, %Segment{absolute_sequence: 1}}, 200
-
-      # The tracker should wait `target_duration` seconds, reload the track
-      # afterwards and detect that one more segment has been provied, together
-      # with the termination tag.
-
-      assert_receive {:segment, ^ref, %Segment{absolute_sequence: 2}}, 2000
-      refute_received {:segment, ^ref, _}, 2000
+      refute_receive {:segment, ^ref, _}, 2000
+      assert_receive {:segment, ^ref, %Segment{absolute_sequence: 1}}, 100
+      assert_receive {:segment, ^ref, %Segment{absolute_sequence: 2}}, 100
+      assert_receive {:segment, ^ref, %Segment{absolute_sequence: 3}}, 100
+      assert_receive {:segment, ^ref, %Segment{absolute_sequence: 4}}, 2000
       assert_receive {:end_of_track, ^ref}, 2000
 
       :ok = Tracker.stop(pid)
