@@ -2,24 +2,10 @@ defmodule HLS.Playlist.Media.Builder do
   alias HLS.Playlist.Media
   alias HLS.Segment
 
-  @type timed_payload :: %{
-          from: float(),
-          to: float(),
-          payload: binary()
-        }
-
-  @type uploadable :: %{
-          from: float(),
-          to: float(),
-          segment: Segment.t(),
-          payloads: [timed_payload()]
-        }
-
   defstruct [
     :playlist,
     :segment_extension,
     replace_empty_segments_uri: false,
-    timed_payloads: [],
     in_flight: %{},
     acknoledged: []
   ]
@@ -103,160 +89,89 @@ defmodule HLS.Playlist.Media.Builder do
   end
 
   @doc """
-  Fits a timed payload inside the builder. It does not accept payload that fall
-  within the boundaries of the consolidated segments, which are the ones that
-  have been already included in the playlist.
+  Fills the playlist with the segments required to get in sync with playback. Returns
+  the segments that should be uploaded before the next segment is filled.
   """
-  def fit(
-        builder = %__MODULE__{playlist: %Media{segments: segments}, timed_payloads: buf},
-        timed_payload = %{from: from}
-      ) do
-    playback =
-      segments
-      |> Enum.map(fn %Segment{duration: duration} -> duration end)
-      |> Enum.sum()
-
-    if from < playback do
-      raise "timed payload #{inspect(timed_payload)} is late (< #{playback})"
-    end
-
-    %__MODULE__{builder | timed_payloads: [timed_payload | buf]}
-  end
-
-  @doc """
-  Pops segments that are ready to be consolidated, i.e., stored insiede the
-  segment/playlist storage and added to the playlist's list of segments. A
-  segment is considered complete if contains timed payloads that finish or
-  excceed its `to` value. If the force option is set to true, all segments are
-  returned even though they are not complete. Useful at EOS.
-  """
-  def pop(builder, opts \\ [])
-
-  def pop(builder = %__MODULE__{timed_payloads: []}, _opts) do
-    {[], builder}
-  end
-
-  def pop(builder, opts) do
-    # Create the list of segments which can contain the timed_payloads. Return
-    # the ones that are complete or all of them, if forced. Create a reference
-    # of each segment and store it. When the segments are (na)acknoledged, add
-    # them to the playlist.
-
-    force? = Keyword.get(opts, :force, false)
-    segment_duration = builder.playlist.target_segment_duration
-
-    timed_payloads =
-      Enum.sort(builder.timed_payloads, fn %{from: left}, %{from: right} -> left < right end)
-
+  def sync(builder, playback) do
     playlist_playback =
       builder.playlist.segments
       |> Enum.map(fn %Segment{duration: duration} -> duration end)
       |> Enum.sum()
 
+    if playlist_playback > playback do
+      raise "cannot fast forward within consolidated segments (#{playlist_playback} > #{playback})"
+    end
+
     segments_count = Enum.count(builder.playlist.segments)
+    segment_duration = builder.playlist.target_segment_duration
 
-    %{to: payloads_playback} = List.last(timed_payloads)
+    # How many segments are needed to fit the payloads?
+    n = ceil((playback - playlist_playback) / builder.playlist.target_segment_duration)
 
-    # How many segments are needed to fit the payloads? As soon as we have some
-    # timed payloads here, at least 1.
-    n = ceil((payloads_playback - playlist_playback) / builder.playlist.target_segment_duration)
-
-    uploadables =
+    segments =
       Range.new(0, n - 1)
-      |> Enum.reduce([], fn seq, acc ->
-        from = playlist_playback + segment_duration * seq
-        to = from + segment_duration
-        [%{from: from, to: to, payloads: [], segment: nil} | acc]
-      end)
-      |> Enum.reverse()
       |> Enum.with_index(segments_count)
-      |> Enum.map(fn {uploadable, index} ->
+      |> Enum.map(fn {_, index} ->
         segment = %Segment{
+          from: playlist_playback + segment_duration * index,
           duration: segment_duration,
           relative_sequence: index,
           absolute_sequence: index,
-          uri: segment_uri(builder, index)
+          uri: segment_uri(builder, index),
+          ref: make_ref()
         }
 
-        %{uploadable | segment: segment}
-      end)
-      |> fit_payloads_into_segments(timed_payloads, [])
-      |> Enum.map(&Map.put(&1, :ref, make_ref()))
-
-    uploadables =
-      if not force? and not Enum.empty?(uploadables) do
-        # Return only those segments that are complete. As soon as we create just
-        # the exact amount of segments required to fit the timed payloads, only the
-        # last segment needs a check.
-        last = List.last(uploadables)
-
-        if is_full(last) do
-          uploadables
+        if builder.replace_empty_segments_uri do
+          %Segment{segment | uri: empty_segment_uri(builder)}
         else
-          Enum.drop(uploadables, -1)
+          segment
         end
-      else
-        uploadables
-      end
-
-    # count the number of timed_payloads that have been fit inside
-    # the segments: those ones are gone.
-    processed_payloads_count =
-      uploadables
-      |> Enum.map(fn %{payloads: acc} -> acc end)
-      |> List.flatten()
-      |> Enum.count()
-
-    timed_payloads = Enum.drop(timed_payloads, processed_payloads_count)
-
-    uploadables =
-      if builder.replace_empty_segments_uri do
-        uploadables
-        |> Enum.map(fn uploadable ->
-          if is_empty_uploadable(uploadable) do
-            %{
-              uploadable
-              | segment: %Segment{uploadable.segment | uri: empty_segment_uri(builder)}
-            }
-          else
-            uploadable
-          end
-        end)
-      else
-        uploadables
-      end
+      end)
 
     in_flight =
-      Enum.reduce(uploadables, builder.in_flight, fn %{ref: ref, segment: segment}, acc ->
-        Map.put(acc, ref, segment)
+      Enum.reduce(segments, builder.in_flight, fn segment, acc ->
+        Map.put(acc, segment.ref, segment)
       end)
 
-    {uploadables, %__MODULE__{builder | timed_payloads: timed_payloads, in_flight: in_flight}}
-  end
-
-  defp is_empty_uploadable(%{payloads: payloads}) do
-    data =
-      payloads
-      |> Enum.map(&Map.get(&1, :payload, <<>>))
-      |> Enum.join()
-
-    data == <<>>
+    {segments, %__MODULE__{builder | in_flight: in_flight}}
   end
 
   @doc """
-  Combines fit and pop action in one call.
+  Returns the next segment that should be filled with content. This call updates
+  the segments `in flight`, meaning that the next time it is called it will
+  return the segment after. Once the segment is filled and uploaded, it has to
+  be acknoledged to end up in the segment playlist list.
   """
-  def fit_and_pop(builder, payload, opts \\ []) do
-    builder
-    |> fit(payload)
-    |> pop(opts)
-  end
+  def next_segment(builder) do
+    # Find the last sequence number.
+    last_segment =
+      if map_size(builder.in_flight) > 0 do
+        builder.in_flight
+        |> Enum.map(fn {_ref, segment} -> segment end)
+        |> Enum.sort(fn %Segment{relative_sequence: left}, %Segment{relative_sequence: right} ->
+          left < right
+        end)
+        |> List.last()
+      else
+        List.last(builder.playlist.segments)
+      end
 
-  defp is_full(%{payloads: []}), do: false
+    index = if is_nil(last_segment), do: 0, else: last_segment.relative_sequence + 1
+    segment_duration = builder.playlist.target_segment_duration
+    from = if is_nil(last_segment), do: 0, else: last_segment.from + last_segment.duration
 
-  defp is_full(%{to: to, payloads: payloads}) do
-    %{to: payloads_to} = List.last(payloads)
-    payloads_to >= to
+    segment = %Segment{
+      from: from,
+      duration: segment_duration,
+      relative_sequence: index,
+      absolute_sequence: index,
+      uri: segment_uri(builder, index),
+      ref: make_ref()
+    }
+
+    in_flight = Map.put(builder.in_flight, segment.ref, segment)
+
+    {segment, %__MODULE__{builder | in_flight: in_flight}}
   end
 
   defp fit_payloads_into_segments([], [], acc), do: Enum.reverse(acc)

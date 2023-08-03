@@ -4,12 +4,14 @@ defmodule HLS.Segment do
   @type t :: %__MODULE__{
           uri: URI.t(),
           # Expressed in seconds.
+          ref: reference(),
           duration: float(),
           relative_sequence: pos_integer(),
-          absolute_sequence: pos_integer() | nil
+          absolute_sequence: pos_integer() | nil,
+          from: pos_integer() | nil
         }
 
-  defstruct [:uri, :duration, :relative_sequence, :absolute_sequence, :from]
+  defstruct [:uri, :duration, :relative_sequence, :absolute_sequence, :from, :ref]
 
   @spec from_tags([Tag.t()]) :: t()
   def from_tags(tags) do
@@ -33,7 +35,8 @@ defmodule HLS.Segment do
     %__MODULE__{
       uri: uri.value,
       duration: duration.value,
-      relative_sequence: sequence
+      relative_sequence: sequence,
+      ref: make_ref()
     }
   end
 
