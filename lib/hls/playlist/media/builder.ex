@@ -59,8 +59,15 @@ defmodule HLS.Playlist.Media.Builder do
   at the location pointed by its URI, meaning that it is now accessible for final users.
   After this action, the segments is included in the playlist if it is the next in the queue.
   """
-  def ack(builder, ref) do
+  def ack(builder, ref, is_empty? \\ false) do
     {segment, in_flight} = Map.pop!(builder.in_flight, ref)
+
+    segment =
+      if is_empty? do
+        %Segment{segment | uri: empty_segment_uri(builder)}
+      else
+        segment
+      end
 
     builder = %__MODULE__{
       builder
