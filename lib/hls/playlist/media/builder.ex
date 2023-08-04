@@ -109,24 +109,29 @@ defmodule HLS.Playlist.Media.Builder do
     n = ceil((playback - playlist_playback) / builder.playlist.target_segment_duration)
 
     segments =
-      Range.new(0, n - 1)
-      |> Enum.with_index(segments_count)
-      |> Enum.map(fn {_, index} ->
-        segment = %Segment{
-          from: playlist_playback + segment_duration * index,
-          duration: segment_duration,
-          relative_sequence: index,
-          absolute_sequence: index,
-          uri: segment_uri(builder, index),
-          ref: make_ref()
-        }
+      if n > 0 do
+        # Is there a better way to repeat this operation n times? Recursion?
+        Range.new(0, n - 1)
+        |> Enum.with_index(segments_count)
+        |> Enum.map(fn {_, index} ->
+          segment = %Segment{
+            from: playlist_playback + segment_duration * index,
+            duration: segment_duration,
+            relative_sequence: index,
+            absolute_sequence: index,
+            uri: segment_uri(builder, index),
+            ref: make_ref()
+          }
 
-        if builder.replace_empty_segments_uri do
-          %Segment{segment | uri: empty_segment_uri(builder)}
-        else
-          segment
-        end
-      end)
+          if builder.replace_empty_segments_uri do
+            %Segment{segment | uri: empty_segment_uri(builder)}
+          else
+            segment
+          end
+        end)
+      else
+        []
+      end
 
     in_flight =
       Enum.reduce(segments, builder.in_flight, fn segment, acc ->
@@ -172,24 +177,6 @@ defmodule HLS.Playlist.Media.Builder do
     in_flight = Map.put(builder.in_flight, segment.ref, segment)
 
     {segment, %__MODULE__{builder | in_flight: in_flight}}
-  end
-
-  defp fit_payloads_into_segments([], [], acc), do: Enum.reverse(acc)
-
-  defp fit_payloads_into_segments([segment_head | segments], [], acc) do
-    # Once we finish the payloads, fast forward.
-    fit_payloads_into_segments(segments, [], [segment_head | acc])
-  end
-
-  defp fit_payloads_into_segments([segment_head | segments], [payload_head | payloads], acc) do
-    if payload_head.from < segment_head.to do
-      # This payload fits in the segment. It does not mean that the segment is complete.
-      segment_head = update_in(segment_head, [:payloads], fn acc -> acc ++ [payload_head] end)
-      fit_payloads_into_segments([segment_head | segments], payloads, acc)
-    else
-      # the current head is complete.
-      fit_payloads_into_segments(segments, [payload_head | payloads], [segment_head | acc])
-    end
   end
 
   # Updates playlist segments.

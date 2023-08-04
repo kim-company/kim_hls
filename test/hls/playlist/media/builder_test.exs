@@ -64,9 +64,16 @@ defmodule HLS.Playlist.Media.BuilderTest do
 
     test "returns the segments that should be uploaded", %{playlist: playlist} do
       builder = Builder.new(playlist)
-      {to_upload, _builder} = Builder.sync(builder, 2)
+      {to_upload, _builder} = Builder.sync(builder, 3)
 
-      assert [0, 1] == Enum.map(to_upload, fn x -> x.relative_sequence end)
+      assert [0, 1, 2] == Enum.map(to_upload, fn x -> x.relative_sequence end)
+    end
+
+    test "syncs with zero", %{playlist: playlist} do
+      builder = Builder.new(playlist)
+      {to_upload, _builder} = Builder.sync(builder, 0)
+
+      assert [] == Enum.map(to_upload, fn x -> x.relative_sequence end)
     end
   end
 
