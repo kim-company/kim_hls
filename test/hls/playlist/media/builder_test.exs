@@ -75,6 +75,19 @@ defmodule HLS.Playlist.Media.BuilderTest do
 
       assert [] == Enum.map(to_upload, fn x -> x.relative_sequence end)
     end
+
+    test "works with a pre-filled playlist", %{playlist: playlist} do
+      segments = [
+        %Segment{uri: URI.new!("0.txt"), relative_sequence: 0, duration: 1, from: 0},
+        %Segment{uri: URI.new!("1.txt"), relative_sequence: 1, duration: 1, from: 1}
+      ]
+
+      playlist = %Media{playlist | segments: segments}
+      builder = Builder.new(playlist)
+      {to_upload, _builder} = Builder.sync(builder, 4)
+      assert [2, 3] == Enum.map(to_upload, fn x -> x.relative_sequence end)
+      assert [2, 3] == Enum.map(to_upload, fn x -> x.from end)
+    end
   end
 
   describe "next_segment" do

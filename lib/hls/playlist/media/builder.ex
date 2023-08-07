@@ -120,9 +120,9 @@ defmodule HLS.Playlist.Media.Builder do
         # Is there a better way to repeat this operation n times? Recursion?
         Range.new(0, n - 1)
         |> Enum.with_index(segments_count)
-        |> Enum.map(fn {_, index} ->
+        |> Enum.map(fn {seq, index} ->
           segment = %Segment{
-            from: playlist_playback + segment_duration * index,
+            from: playlist_playback + segment_duration * seq,
             duration: segment_duration,
             relative_sequence: index,
             absolute_sequence: index,
