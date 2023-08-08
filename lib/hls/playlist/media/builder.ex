@@ -113,7 +113,7 @@ defmodule HLS.Playlist.Media.Builder do
     segment_duration = builder.playlist.target_segment_duration
 
     # How many segments are needed to fit the payloads?
-    n = ceil((playback - playlist_playback) / builder.playlist.target_segment_duration)
+    n = floor((playback - playlist_playback) / builder.playlist.target_segment_duration)
 
     segments =
       if n > 0 do

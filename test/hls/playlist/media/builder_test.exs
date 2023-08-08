@@ -76,6 +76,13 @@ defmodule HLS.Playlist.Media.BuilderTest do
       assert [] == Enum.map(to_upload, fn x -> x.relative_sequence end)
     end
 
+    test "does not shadow the first partial segment", %{playlist: playlist} do
+      builder = Builder.new(playlist)
+      {to_upload, _builder} = Builder.sync(builder, 0.1)
+
+      assert [] == Enum.map(to_upload, fn x -> x.relative_sequence end)
+    end
+
     test "works with a pre-filled playlist", %{playlist: playlist} do
       segments = [
         %Segment{uri: URI.new!("0.txt"), relative_sequence: 0, duration: 1, from: 0},
@@ -151,7 +158,7 @@ defmodule HLS.Playlist.Media.BuilderTest do
       {new_segments, builder} =
         playlist
         |> Builder.new()
-        |> Builder.sync(2.5)
+        |> Builder.sync(3)
 
       assert length(new_segments) == 1
 
@@ -169,7 +176,7 @@ defmodule HLS.Playlist.Media.BuilderTest do
       {segments, builder} =
         playlist
         |> Builder.new()
-        |> Builder.sync(0.5)
+        |> Builder.sync(1)
 
       playlist =
         segments
