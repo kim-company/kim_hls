@@ -134,6 +134,15 @@ defmodule HLS.PlaylistTest do
       assert manifest.version == version
     end
 
+    test "parses manifest without version as version 1" do
+      content = """
+      #EXTM3U
+      """
+
+      manifest = Playlist.unmarshal(content, %Master{})
+      assert manifest.version == 1
+    end
+
     test "collects all variant streams" do
       content = """
       #EXTM3U
