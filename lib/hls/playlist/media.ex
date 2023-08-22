@@ -133,7 +133,7 @@ defimpl HLS.Playlist.Unmarshaler, for: HLS.Playlist.Media do
 
   @impl true
   def load_tags(playlist, tags) do
-    [version] = Map.fetch!(tags, Tag.Version.id())
+    [version] = Map.get(tags, Tag.Version.id(), [%{value: 1}])
     [segment_duration] = Map.fetch!(tags, Tag.TargetSegmentDuration.id())
     [sequence_number] = Map.fetch!(tags, Tag.MediaSequenceNumber.id())
 

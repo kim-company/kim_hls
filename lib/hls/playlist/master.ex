@@ -61,7 +61,7 @@ defimpl HLS.Playlist.Unmarshaler, for: HLS.Playlist.Master do
 
   @impl true
   def load_tags(playlist, tags) do
-    [version] = Map.fetch!(tags, Tag.Version.id())
+    [version] = Map.get(tags, Tag.Version.id(), [%{value: 1}])
 
     renditions =
       tags
