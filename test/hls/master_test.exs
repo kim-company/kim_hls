@@ -13,9 +13,9 @@ defmodule HLS.Playlist.MasterTest do
   test "unmarshal and marshal results in the same playlist" do
     raw_playlist = File.read!(@playlist_file)
 
-		assert %Playlist.Master{} = playlist = Playlist.unmarshal(raw_playlist, %Playlist.Master{})
-		marshaled_playlist = Playlist.marshal(playlist)
-		assert is_binary(marshaled_playlist)
-		assert Playlist.unmarshal(marshaled_playlist, %Playlist.Master{}) == playlist
+    assert %Playlist.Master{} = playlist = Playlist.unmarshal(raw_playlist, %Playlist.Master{})
+    marshaled_playlist = Playlist.marshal(playlist)
+    assert is_binary(marshaled_playlist)
+    assert Playlist.unmarshal(marshaled_playlist, %Playlist.Master{}) == playlist
   end
 end
