@@ -77,7 +77,7 @@ defmodule HLS.Playlist.Tag do
       @impl true
       def match?(line) do
         prefix = Tag.marshal_id(unquote(tag_id))
-        String.starts_with?(line, prefix)
+        line == prefix or String.starts_with?(line, prefix <> ":")
       end
 
       @impl true

@@ -186,7 +186,7 @@ defmodule HLS.PlaylistTest do
       end)
     end
 
-    test "handels complex uri specifications" do
+    test "handles complex uri specifications" do
       content = """
       #EXTM3U
       #EXT-X-VERSION:3
@@ -235,6 +235,16 @@ defmodule HLS.PlaylistTest do
       |> Enum.each(fn {key, val} ->
         assert Map.get(rendition, key) == val, "expected #{inspect(val)} on key #{inspect(key)}"
       end)
+    end
+
+    test "ignores EXT-X-MEDIA-SEQUENCE tag" do
+      content = """
+      #EXTM3U
+      #EXT-X-MEDIA-SEQUENCE:0
+      """
+
+      manifest = Playlist.unmarshal(content, %Master{})
+      assert manifest
     end
   end
 
