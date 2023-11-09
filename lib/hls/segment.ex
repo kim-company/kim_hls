@@ -8,10 +8,11 @@ defmodule HLS.Segment do
           duration: float(),
           relative_sequence: pos_integer(),
           absolute_sequence: pos_integer() | nil,
-          from: pos_integer() | nil
+          from: pos_integer() | nil,
+          discontinuity: boolean()
         }
 
-  defstruct [:uri, :duration, :relative_sequence, :absolute_sequence, :from, :ref]
+  defstruct [:uri, :duration, :relative_sequence, :absolute_sequence, :from, :ref, :discontinuity]
 
   @spec from_tags([Tag.t()]) :: t()
   def from_tags(tags) do
@@ -32,11 +33,17 @@ defmodule HLS.Segment do
     duration = Enum.find(tags, fn tag -> tag.id == Tag.Inf.id() end)
     uri = Enum.find(tags, fn tag -> tag.id == Tag.SegmentURI.id() end)
 
+    discontinuity =
+      Enum.any?(tags, fn tag ->
+        tag.id == :ext_x_discontinuity
+      end)
+
     %__MODULE__{
       uri: uri.value,
       duration: duration.value,
       relative_sequence: sequence,
-      ref: make_ref()
+      ref: make_ref(),
+      discontinuity: discontinuity
     }
   end
 
