@@ -357,5 +357,32 @@ defmodule HLS.PlaylistTest do
       assert last.uri.query ==
                "t=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE2NTc5MTYzMDEsImlhdCI6MTY1Nzg3MzEwMSwiaXNzIjoiY2RwIiwic3ViIjoiNmhReUhyUGRhRTNuL2Evc3RyZWFtXzEyODB4NzIwXzMzMDBrIiwidXNlcl9pZCI6IjMwNiIsInZpc2l0b3JfaWQiOiJiMGMyMGVkZS0wNDE2LTExZWQtYTYyMS0wYTU4YTlmZWFjMDIifQ.Fj7CADyZeoWtpaqiZLPodNHMWhlGeKjxLwpMR7lygqk"
     end
+
+    test "recognizes discontinuity tag" do
+      content = """
+      #EXTM3U
+      #EXT-X-VERSION:7
+      #EXT-X-TARGETDURATION:10
+      #EXT-X-MEDIA-SEQUENCE:0
+      #EXTINF:10.0,
+      video_segment_0_video_track.ts
+      #EXT-X-DISCONTINUITY
+      #EXTINF:2.0,
+      video_segment_1_video_track.ts
+      #EXTINF:3.0,
+      video_segment_2_video_track.ts
+      #EXT-X-ENDLIST
+      """
+
+      manifest = Playlist.unmarshal(content, %Media{})
+      segments = Media.segments(manifest)
+      first = Enum.at(segments, 0)
+      second = Enum.at(segments, 1)
+      third = Enum.at(segments, 2)
+
+      assert first.discontinuity == false
+      assert second.discontinuity == true
+      assert third.discontinuity == false
+    end
   end
 end
