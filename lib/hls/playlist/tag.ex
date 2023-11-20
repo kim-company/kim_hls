@@ -200,7 +200,6 @@ defmodule HLS.Playlist.Tag do
     marshaled_tag_id = marshal_id(tag_id)
     regex = Regex.compile!("#{marshaled_tag_id}:(?<target>#{match_pattern})")
     %{"target" => raw} = Regex.named_captures(regex, data)
-
     parser_fun.(raw)
   end
 
