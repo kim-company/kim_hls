@@ -44,6 +44,29 @@ defmodule HLS.Playlist.Master do
   """
   @spec build_media_uri(URI.t(), URI.t()) :: URI.t()
   def build_media_uri(master_uri, media_uri), do: HLS.Helper.merge_uri(master_uri, media_uri)
+
+  def add_alternative_renditions(master, alternatives) do
+    tags = Enum.map(alternatives, &HLS.AlternativeRendition.to_tag/1)
+
+    # Add the tags
+    master =
+      Enum.reduce(tags, master, fn tag, master ->
+        tags =
+          update_in(master.tags, [tag.id], fn old ->
+            [tag | old]
+          end)
+
+        %__MODULE__{master | tags: tags}
+      end)
+
+    # Update alternative renditions
+    streams =
+      master
+      |> variant_streams()
+      |> Enum.map(&HLS.VariantStream.maybe_associate_alternative_rendition(&1, alternatives))
+
+    %__MODULE__{master | streams: streams}
+  end
 end
 
 defimpl HLS.Playlist.Unmarshaler, for: HLS.Playlist.Master do
@@ -134,7 +157,7 @@ defimpl HLS.Playlist.Marshaler, for: HLS.Playlist.Master do
     |> Enum.map_join(",", fn {key, value} ->
       value =
         case value do
-          string when is_binary(string) -> "\"#{string}\""
+          string when is_binary(string) and key != "TYPE" -> "\"#{string}\""
           true -> "YES"
           false -> "NO"
           other -> other
@@ -144,7 +167,7 @@ defimpl HLS.Playlist.Marshaler, for: HLS.Playlist.Master do
     end)
   end
 
-  defp prepare_attributes({:resolution, {x, y}}), do: {"RESOLUTION", '#{x}x#{y}'}
+  defp prepare_attributes({:resolution, {x, y}}), do: {"RESOLUTION", ~c"#{x}x#{y}"}
   defp prepare_attributes({:codecs, codecs}), do: {"CODECS", Enum.join(codecs, ",")}
   defp prepare_attributes({:type, type}), do: {"TYPE", String.upcase(to_string(type))}
   defp prepare_attributes({:uri, uri}), do: {"URI", to_string(uri)}

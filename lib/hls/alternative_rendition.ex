@@ -60,6 +60,7 @@ defmodule HLS.AlternativeRendition do
       alternative
       |> Map.from_struct()
       |> Enum.reject(fn {k, _} -> k == :attributes end)
+      |> Enum.filter(fn {_, val} -> val != nil end)
 
     %Tag{id: :ext_x_media, class: :master_playlist, attributes: attributes, sequence: 0}
   end
