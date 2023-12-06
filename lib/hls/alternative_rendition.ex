@@ -54,4 +54,13 @@ defmodule HLS.AlternativeRendition do
 
     struct(__MODULE__, Map.merge(optional, mandatory))
   end
+
+  def to_tag(alternative) do
+    attributes =
+      alternative
+      |> Map.from_struct()
+      |> Enum.reject(fn {k, _} -> k == :attributes end)
+
+    %Tag{id: :ext_x_media, class: :master_playlist, attributes: attributes, sequence: 0}
+  end
 end
