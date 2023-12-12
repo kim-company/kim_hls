@@ -53,7 +53,7 @@ defmodule HLS.Playlist.Master do
       Enum.reduce(tags, master, fn tag, master ->
         tags =
           update_in(master.tags, [tag.id], fn old ->
-            [tag | old]
+            old ++ [tag]
           end)
 
         %__MODULE__{master | tags: tags}
@@ -146,7 +146,6 @@ defimpl HLS.Playlist.Marshaler, for: HLS.Playlist.Master do
   defp marshal_tags(tags, fun) do
     tags
     |> List.flatten()
-    |> Enum.reverse()
     |> Enum.flat_map(fn tag -> tag |> fun.() |> List.wrap() end)
   end
 

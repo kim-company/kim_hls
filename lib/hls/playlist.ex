@@ -46,6 +46,7 @@ defmodule HLS.Playlist do
           {[tag | marshaled], n, nil}
       end)
       |> elem(0)
+      |> Enum.reverse()
       |> Enum.group_by(fn tag ->
         if tag.class == :media_segment do
           {tag.sequence, :segment}
