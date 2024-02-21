@@ -1,13 +1,14 @@
 defmodule HLS.Playlist.Media.Tracker do
   use GenServer
 
-  alias HLS.FS.Reader
   alias HLS.Playlist.Media
   alias HLS.{Segment, Playlist}
 
   defstruct [:reader, :media_playlist_uri, following: %{}]
 
   @type target_t :: URI.t()
+
+  @type reader_fun :: (URI.t() -> binary())
 
   @max_initial_live_segments 3
 
@@ -17,6 +18,7 @@ defmodule HLS.Playlist.Media.Tracker do
 
   def initial_live_buffer_size(), do: @max_initial_live_segments
 
+  @spec start_link(reader_fun(), Keyword.t()) :: GenServer.on_start()
   def start_link(reader, opts \\ []) do
     GenServer.start_link(__MODULE__, reader, opts)
   end
@@ -53,7 +55,7 @@ defmodule HLS.Playlist.Media.Tracker do
   end
 
   defp read_media_playlist(reader, uri) do
-    {:ok, raw_playlist} = Reader.read(reader, uri)
+    raw_playlist = reader.(uri)
     Playlist.unmarshal(raw_playlist, %Media{uri: uri})
   end
 

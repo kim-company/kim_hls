@@ -3,19 +3,20 @@ defmodule HLS.Playlist.Media.TrackerTest do
 
   alias HLS.Playlist.Media.Tracker
   alias HLS.Segment
-  alias HLS.FS.OS
 
   @media_uri URI.new!("./test/fixtures/mpeg-ts/stream_416x234.m3u8")
 
+  defp os_read_uri(%URI{path: path}), do: File.read!(path)
+
   describe "tracker process" do
     test "starts and exits on demand" do
-      assert {:ok, pid} = Tracker.start_link(OS.new())
+      assert {:ok, pid} = Tracker.start_link(&os_read_uri/1)
       assert Process.alive?(pid)
       assert :ok = Tracker.stop(pid)
     end
 
     test "sends one message for each segment in a static track" do
-      {:ok, pid} = Tracker.start_link(OS.new())
+      {:ok, pid} = Tracker.start_link(&os_read_uri/1)
       ref = Tracker.follow(pid, @media_uri)
 
       # sequence goes from 1 to 5 as the target playlist starts with a media
@@ -31,7 +32,7 @@ defmodule HLS.Playlist.Media.TrackerTest do
 
     #
     test "sends start of track message identifing first sequence number" do
-      {:ok, pid} = Tracker.start_link(OS.new())
+      {:ok, pid} = Tracker.start_link(&os_read_uri/1)
       ref = Tracker.follow(pid, @media_uri)
 
       assert_receive {:start_of_track, ^ref, 1}, 1000
@@ -40,7 +41,7 @@ defmodule HLS.Playlist.Media.TrackerTest do
     end
 
     test "sends track termination message when track is finished" do
-      {:ok, pid} = Tracker.start_link(OS.new())
+      {:ok, pid} = Tracker.start_link(&os_read_uri/1)
       ref = Tracker.follow(pid, @media_uri)
 
       assert_receive {:end_of_track, ^ref}, 1000
