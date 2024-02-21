@@ -31,7 +31,9 @@ defmodule HLS.Playlist.Master do
   the playlist has an uri, alternative rendition's uri will be updated such
   that it is fetchable.
   """
-  @spec filter_alternative_renditions_for_stream(VariantStream.t(), t()) :: [AlternativeRendition.t()]
+  @spec filter_alternative_renditions_for_stream(VariantStream.t(), t()) :: [
+          AlternativeRendition.t()
+        ]
   def filter_alternative_renditions_for_stream(stream, master) do
     group_ids = VariantStream.associated_group_ids(stream)
 

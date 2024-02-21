@@ -12,7 +12,7 @@ defmodule HLS.VariantStream do
           audio: Tag.group_id_t(),
           video: Tag.group_id_t(),
           subtitles: Tag.group_id_t(),
-          closed_captions: Tag.group_id_t(),
+          closed_captions: Tag.group_id_t()
         }
 
   @mandatory_keys [:uri, :bandwidth, :codecs]
@@ -54,7 +54,7 @@ defmodule HLS.VariantStream do
   def to_tag(stream) do
     data = Map.from_struct(stream)
 
-    attrs = 
+    attrs =
       @mandatory_keys
       |> Enum.map(fn k -> {k, Map.fetch!(data, k)} end)
       |> Enum.into(%{})

@@ -140,6 +140,7 @@ defmodule HLS.PlaylistTest do
       muxed_video_480x270.m3u8
       #EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subtitles",NAME="German (Germany)",DEFAULT=NO,AUTOSELECT=NO,FORCED=NO,LANGUAGE="de-DE",URI="subtitles.m3u8"
       """
+
       manifest = Playlist.unmarshal(content, %Master{})
       marshaled = Playlist.marshal(manifest)
       manifest = Playlist.unmarshal(marshaled, %Master{})
