@@ -47,14 +47,8 @@ defmodule HLS.Playlist.MasterTest do
       attributes: %{}
     }
 
-    master = Playlist.Master.add_alternative_renditions(playlist, [alternative])
-
-    lines =
-      master
-      |> Playlist.marshal()
-      |> String.split("\n")
-
-    assert List.last(lines) ==
-             ~s/#EXT-X-MEDIA:AUTOSELECT=NO,DEFAULT=NO,GROUP-ID="program_audio_96k",LANGUAGE="eng",NAME="English 1",TYPE=AUDIO,URI="stream_audio_abc_96k.m3u8"/
+    assert Enum.count(playlist.alternative_renditions) == 9
+    playlist = Playlist.Master.add_alternative_renditions(playlist, [alternative])
+    assert Enum.count(playlist.alternative_renditions) == 10
   end
 end

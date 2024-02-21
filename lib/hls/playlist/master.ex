@@ -14,28 +14,32 @@ defmodule HLS.Playlist.Master do
   @doc """
   Returns the variant streams of this playlist. If the master playlist is
   equipped with an uri, creates the absolute uris of the variant streams that
-  can be used to fetch the playlist.
+  can be used to fetch the playlist. Associates any alternative rendition
+  to each stream.
   """
   @spec variant_streams(t) :: [VariantStream.t()]
   def variant_streams(master = %__MODULE__{streams: streams}) do
     streams
     |> Enum.map(fn stream ->
       uri = build_media_uri(master.uri, stream.uri)
+      %VariantStream{stream | uri: uri}
+    end)
+  end
 
-      alts =
-        stream.alternatives
-        |> Enum.map(fn {key, renditions} ->
-          renditions =
-            Enum.map(renditions, fn rendition ->
-              uri = build_media_uri(master.uri, rendition.uri)
-              %AlternativeRendition{rendition | uri: uri}
-            end)
+  @doc """
+  Use this function to obtain the alternative renditions for a stream. If
+  the playlist has an uri, alternative rendition's uri will be updated such
+  that it is fetchable.
+  """
+  @spec filter_alternative_renditions_for_stream(VariantStream.t(), t()) :: [AlternativeRendition.t()]
+  def filter_alternative_renditions_for_stream(stream, master) do
+    group_ids = VariantStream.associated_group_ids(stream)
 
-          {key, renditions}
-        end)
-        |> Enum.into(%{})
-
-      %VariantStream{stream | uri: uri, alternatives: alts}
+    master.alternative_renditions
+    |> Enum.filter(fn rendition -> Enum.member?(group_ids, rendition.group_id) end)
+    |> Enum.map(fn rendition ->
+      uri = build_media_uri(master.uri, rendition.uri)
+      %AlternativeRendition{rendition | uri: uri}
     end)
   end
 
@@ -46,13 +50,7 @@ defmodule HLS.Playlist.Master do
   def build_media_uri(master_uri, media_uri), do: HLS.Helper.merge_uri(master_uri, media_uri)
 
   def add_alternative_renditions(master, alternatives) do
-    # Update alternative renditions
-    streams =
-      master
-      |> variant_streams()
-      |> Enum.map(&HLS.VariantStream.maybe_associate_alternative_rendition(&1, alternatives))
-
-    %__MODULE__{master | streams: streams}
+    %__MODULE__{master | alternative_renditions: master.alternative_renditions ++ alternatives}
   end
 end
 
