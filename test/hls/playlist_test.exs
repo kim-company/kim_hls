@@ -214,10 +214,9 @@ defmodule HLS.PlaylistTest do
       """
 
       manifest = Playlist.unmarshal(content, %Master{})
-      stream = List.first(Master.variant_streams(manifest))
 
       assert [%AlternativeRendition{} = rendition] =
-               VariantStream.alternative_renditions(stream, :subtitles)
+               manifest.alternative_renditions
 
       [
         group_id: "subtitles",

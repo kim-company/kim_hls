@@ -1,15 +1,14 @@
 defmodule HLS.Playlist.Master do
   alias HLS.VariantStream
-  alias HLS.Playlist
 
   @type t :: %__MODULE__{
           uri: URI.t() | nil,
-          tags: Playlist.tag_map_t(),
           version: pos_integer(),
           streams: VariantStream.t(),
-          independent_segments: boolean()
+          independent_segments: boolean(),
+          alternative_renditions: [HLS.AlternativeRendition.t()]
         }
-  defstruct [:version, :independent_segments, :uri, tags: %{}, streams: []]
+  defstruct [:version, :independent_segments, :uri, streams: [], alternative_renditions: []]
 
   @doc """
   Returns the variant streams of this playlist. If the master playlist is
@@ -46,19 +45,6 @@ defmodule HLS.Playlist.Master do
   def build_media_uri(master_uri, media_uri), do: HLS.Helper.merge_uri(master_uri, media_uri)
 
   def add_alternative_renditions(master, alternatives) do
-    tags = Enum.map(alternatives, &HLS.AlternativeRendition.to_tag/1)
-
-    # Add the tags
-    master =
-      Enum.reduce(tags, master, fn tag, master ->
-        tags =
-          update_in(master.tags, [tag.id], fn old ->
-            old ++ [tag]
-          end)
-
-        %__MODULE__{master | tags: tags}
-      end)
-
     # Update alternative renditions
     streams =
       master
@@ -89,7 +75,7 @@ defimpl HLS.Playlist.Unmarshaler, for: HLS.Playlist.Master do
     [version] = Map.get(tags, Tag.Version.id(), [%{value: 1}])
     independent_segments = Map.get(tags, Tag.IndependentSegments.id(), false)
 
-    renditions =
+    alternatives =
       tags
       |> Map.get(Tag.AlternativeRendition.id(), [])
       |> Enum.map(&AlternativeRendition.from_tag(&1))
@@ -98,13 +84,12 @@ defimpl HLS.Playlist.Unmarshaler, for: HLS.Playlist.Master do
       tags
       |> Map.get(Tag.VariantStream.id(), [])
       |> Enum.map(&VariantStream.from_tag(&1))
-      |> Enum.map(&VariantStream.maybe_associate_alternative_rendition(&1, renditions))
 
     %HLS.Playlist.Master{
       playlist
-      | tags: tags,
-        version: version.value,
+      | version: version.value,
         streams: streams,
+        alternative_renditions: alternatives,
         independent_segments: independent_segments
     }
   end
