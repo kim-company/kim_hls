@@ -3,7 +3,6 @@ defmodule HLS.Playlist.Media do
   alias HLS.Segment
 
   @type t :: %__MODULE__{
-          tags: Playlist.Unmarshaler.tag_map_t(),
           version: pos_integer(),
           # specifies the maximum length of segments.
           # https://www.rfc-editor.org/rfc/rfc8216#section-4.3.3.1
@@ -26,7 +25,6 @@ defmodule HLS.Playlist.Media do
     type: nil,
     media_sequence_number: 0,
     version: 7,
-    tags: %{},
     segments: []
   ]
 
@@ -169,8 +167,7 @@ defimpl HLS.Playlist.Unmarshaler, for: HLS.Playlist.Media do
 
     %HLS.Playlist.Media{
       playlist
-      | tags: tags,
-        version: version.value,
+      | version: version.value,
         target_segment_duration: segment_duration.value,
         media_sequence_number: sequence_number.value,
         finished: finished?,

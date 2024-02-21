@@ -1,12 +1,13 @@
 defmodule HLS.Playlist.Master do
   alias HLS.VariantStream
+  alias HLS.AlternativeRendition
 
   @type t :: %__MODULE__{
           uri: URI.t() | nil,
           version: pos_integer(),
           streams: VariantStream.t(),
           independent_segments: boolean(),
-          alternative_renditions: [HLS.AlternativeRendition.t()]
+          alternative_renditions: [AlternativeRendition.t()]
         }
   defstruct [:version, :independent_segments, :uri, streams: [], alternative_renditions: []]
 
@@ -27,7 +28,7 @@ defmodule HLS.Playlist.Master do
           renditions =
             Enum.map(renditions, fn rendition ->
               uri = build_media_uri(master.uri, rendition.uri)
-              %HLS.AlternativeRendition{rendition | uri: uri}
+              %AlternativeRendition{rendition | uri: uri}
             end)
 
           {key, renditions}
@@ -97,21 +98,28 @@ end
 
 defimpl HLS.Playlist.Marshaler, for: HLS.Playlist.Master do
   alias HLS.Playlist.Tag
+  alias HLS.VariantStream
+  alias HLS.AlternativeRendition
 
   def marshal(playlist) do
     [
       "#EXTM3U",
       "#EXT-X-VERSION:#{playlist.version}",
       playlist.independent_segments && "#EXT-X-INDEPENDENT-SEGMENTS",
-      marshal_stream_inf(playlist.tags.ext_x_stream_inf),
-      marshal_media(playlist.tags.ext_x_media)
+      marshal_stream_inf(playlist.streams),
+      marshal_media(playlist.alternative_renditions)
     ]
     |> List.flatten()
     |> Enum.reject(&is_nil/1)
     |> Enum.join("\n")
   end
 
-  defp marshal_stream_inf(tags) do
+  defp marshal_stream_inf(streams) do
+    tags =
+      streams
+      |> Enum.map(&VariantStream.to_tag/1)
+      |> List.flatten()
+
     marshal_tags(tags, fn tag ->
       {uri, attributes} = Map.pop(tag.attributes, :uri)
       value = marshal_attributes(attributes)
@@ -120,7 +128,12 @@ defimpl HLS.Playlist.Marshaler, for: HLS.Playlist.Master do
     end)
   end
 
-  defp marshal_media(tags) do
+  defp marshal_media(alternatives) do
+    tags =
+      alternatives
+      |> Enum.map(&AlternativeRendition.to_tag/1)
+      |> List.flatten()
+
     marshal_tags(tags, fn tag ->
       value = marshal_attributes(tag.attributes)
 

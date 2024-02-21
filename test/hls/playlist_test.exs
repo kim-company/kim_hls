@@ -113,6 +113,41 @@ defmodule HLS.PlaylistTest do
     end
   end
 
+  describe "Marshal Master Playlist" do
+    test "with streams" do
+      content = """
+      #EXTM3U
+      #EXT-X-VERSION:7
+      #EXT-X-STREAM-INF:BANDWIDTH=1187651,CODECS="avc1.42e00a"
+      muxed_video_480x270.m3u8
+      #EXT-X-STREAM-INF:BANDWIDTH=609514,CODECS="avc1.42e00a"
+      muxed_video_540x360.m3u8
+      #EXT-X-STREAM-INF:BANDWIDTH=863865,CODECS="avc1.42e00a"
+      muxed_video_720x480.m3u8
+      """
+
+      manifest = Playlist.unmarshal(content, %Master{})
+      marshaled = Playlist.marshal(manifest)
+      manifest = Playlist.unmarshal(marshaled, %Master{})
+      assert Enum.count(Master.variant_streams(manifest)) == 3
+    end
+
+    test "with alternative renditions" do
+      content = """
+      #EXTM3U
+      #EXT-X-VERSION:7
+      #EXT-X-STREAM-INF:BANDWIDTH=1187651,CODECS="avc1.42e00a,SUBTITLES="subtitles"
+      muxed_video_480x270.m3u8
+      #EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subtitles",NAME="German (Germany)",DEFAULT=NO,AUTOSELECT=NO,FORCED=NO,LANGUAGE="de-DE",URI="subtitles.m3u8"
+      """
+      manifest = Playlist.unmarshal(content, %Master{})
+      marshaled = Playlist.marshal(manifest)
+      manifest = Playlist.unmarshal(marshaled, %Master{})
+      assert Enum.count(Master.variant_streams(manifest)) == 1
+      assert Enum.count(manifest.alternative_renditions) == 1
+    end
+  end
+
   describe "Unmarshal Master Playlist" do
     test "fails with empty content" do
       [

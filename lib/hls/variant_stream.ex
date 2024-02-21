@@ -53,6 +53,26 @@ defmodule HLS.VariantStream do
     struct(__MODULE__, Map.merge(optional, mandatory))
   end
 
+  def to_tag(stream) do
+    data = Map.from_struct(stream)
+
+    attrs = 
+      @mandatory_keys
+      |> Enum.map(fn k -> {k, Map.fetch!(data, k)} end)
+      |> Enum.into(%{})
+
+    attrs =
+      @optional_keys
+      |> Enum.reduce(attrs, fn key, acc ->
+        case Map.get(data, key) do
+          nil -> acc
+          value -> Map.put(acc, key, value)
+        end
+      end)
+
+    %Tag{id: Tag.VariantStream.id(), class: :master_playlist, attributes: attrs}
+  end
+
   @spec alternative_renditions(t(), AlternativeRendition.type_t()) :: [AlternativeRendition.t()]
   def alternative_renditions(%__MODULE__{alternatives: alts}, alt_type) do
     Map.get(alts, alt_type, [])
