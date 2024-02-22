@@ -43,8 +43,7 @@ defmodule HLS.Playlist.MasterTest do
       forced: nil,
       instream_id: nil,
       channels: nil,
-      characteristics: nil,
-      attributes: %{}
+      characteristics: nil
     }
 
     assert Enum.count(playlist.alternative_renditions) == 9

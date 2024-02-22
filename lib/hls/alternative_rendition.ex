@@ -14,7 +14,7 @@ defmodule HLS.AlternativeRendition do
           default: boolean(),
           instream_id: String.t(),
           channels: String.t(),
-          characteristics: String.t()
+          characteristics: [String.t()]
         }
 
   @mandatory_keys [:type, :group_id, :name]
@@ -31,7 +31,7 @@ defmodule HLS.AlternativeRendition do
     :characteristics
   ]
 
-  defstruct @enforce_keys ++ @optional_keys ++ [attributes: %{}]
+  defstruct @enforce_keys ++ @optional_keys
 
   def from_tag(%Tag{id: id, attributes: attrs}) do
     if id != Tag.AlternativeRendition.id() do
@@ -59,7 +59,6 @@ defmodule HLS.AlternativeRendition do
     attributes =
       alternative
       |> Map.from_struct()
-      |> Enum.reject(fn {k, _} -> k == :attributes end)
       |> Enum.filter(fn {_, val} -> val != nil end)
 
     %Tag{id: :ext_x_media, class: :master_playlist, attributes: attributes, sequence: 0}

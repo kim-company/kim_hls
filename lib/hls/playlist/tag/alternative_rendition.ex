@@ -15,7 +15,7 @@ defmodule HLS.Playlist.Tag.AlternativeRendition do
       "AUTOSELECT", val -> {:autoselect, parse_yes_no(val)}
       "FORCED", val -> {:forced, parse_yes_no(val)}
       "INSTREAM-ID", val -> {:instream_id, val}
-      "CHARACTERISTICS", val -> {:characteristics, val}
+      "CHARACTERISTICS", val -> {:characteristics, String.split(val, ",")}
       "CHANNELS", val -> {:channels, val}
       _key, _val -> :skip
     end)

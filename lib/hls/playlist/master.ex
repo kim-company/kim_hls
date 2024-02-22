@@ -168,6 +168,7 @@ defimpl HLS.Playlist.Marshaler, for: HLS.Playlist.Master do
   defp prepare_attributes({:codecs, codecs}), do: {"CODECS", Enum.join(codecs, ",")}
   defp prepare_attributes({:type, type}), do: {"TYPE", String.upcase(to_string(type))}
   defp prepare_attributes({:uri, uri}), do: {"URI", to_string(uri)}
+  defp prepare_attributes({:characteristics, list}), do: {"CHARACTERISTICS", Enum.join(list, ",")}
 
   defp prepare_attributes({:frame_rate, framerate}),
     do: {"FRAME-RATE", :erlang.float_to_list(framerate, decimals: 3)}
