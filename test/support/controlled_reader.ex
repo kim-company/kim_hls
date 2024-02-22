@@ -23,15 +23,12 @@ defmodule Support.ControlledReader do
         }
       end)
 
-    %__MODULE__{pid: pid}
+    fn uri ->
+      read(pid, uri)
+    end
   end
-end
 
-defimpl HLS.FS.Reader, for: Support.ControlledReader do
-  alias Support.ControlledReader, as: Mock
-
-  @impl true
-  def read(%Mock{pid: pid}, _, _) do
+  def read(pid, _) do
     config =
       Agent.get_and_update(pid, fn state ->
         {state, %{state | calls: state.calls + 1}}
@@ -61,9 +58,6 @@ defimpl HLS.FS.Reader, for: Support.ControlledReader do
         ""
       end
 
-    {:ok, Enum.join([header] ++ segs ++ [tail], "\n")}
+    Enum.join([header] ++ segs ++ [tail], "\n")
   end
-
-  @impl true
-  def exists?(_, _), do: true
 end

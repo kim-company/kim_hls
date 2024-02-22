@@ -1,6 +1,5 @@
 defmodule HLS.VariantStream do
   alias HLS.Playlist.Tag
-  alias HLS.AlternativeRendition
 
   @type t :: %__MODULE__{
           uri: URI.t(),
@@ -13,8 +12,7 @@ defmodule HLS.VariantStream do
           audio: Tag.group_id_t(),
           video: Tag.group_id_t(),
           subtitles: Tag.group_id_t(),
-          closed_captions: Tag.group_id_t(),
-          alternatives: %{required(AlternativeRendition.type_t()) => [AlternativeRendition.t()]}
+          closed_captions: Tag.group_id_t()
         }
 
   @mandatory_keys [:uri, :bandwidth, :codecs]
@@ -29,7 +27,7 @@ defmodule HLS.VariantStream do
     :closed_captions,
     hdcp_level: :none
   ]
-  defstruct @enforce_keys ++ @optional_keys ++ [alternatives: %{}]
+  defstruct @enforce_keys ++ @optional_keys
 
   def from_tag(%Tag{id: id, attributes: attrs}) do
     if id != Tag.VariantStream.id() do
@@ -53,24 +51,27 @@ defmodule HLS.VariantStream do
     struct(__MODULE__, Map.merge(optional, mandatory))
   end
 
-  @spec alternative_renditions(t(), AlternativeRendition.type_t()) :: [AlternativeRendition.t()]
-  def alternative_renditions(%__MODULE__{alternatives: alts}, alt_type) do
-    Map.get(alts, alt_type, [])
+  def to_tag(stream) do
+    data = Map.from_struct(stream)
+
+    attrs =
+      @mandatory_keys
+      |> Enum.map(fn k -> {k, Map.fetch!(data, k)} end)
+      |> Enum.into(%{})
+
+    attrs =
+      @optional_keys
+      |> Enum.reduce(attrs, fn key, acc ->
+        case Map.get(data, key) do
+          nil -> acc
+          value -> Map.put(acc, key, value)
+        end
+      end)
+
+    %Tag{id: Tag.VariantStream.id(), class: :master_playlist, attributes: attrs}
   end
 
-  def maybe_associate_alternative_rendition(stream, renditions) do
-    group_ids = associated_group_ids(stream)
-
-    alternatives =
-      renditions
-      |> Enum.filter(fn rendition -> Enum.member?(group_ids, rendition.group_id) end)
-      |> Enum.group_by(fn rendition -> rendition.type end)
-
-    alternatives = Map.merge(stream.alternatives, alternatives, fn _k, v1, v2 -> v1 ++ v2 end)
-    %__MODULE__{stream | alternatives: alternatives}
-  end
-
-  defp associated_group_ids(stream) do
+  def associated_group_ids(stream) do
     [:video, :audio, :subtitles, :closed_captions]
     |> Enum.reduce([], fn rendition_type, acc ->
       case Map.get(stream, rendition_type) do
