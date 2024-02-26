@@ -20,7 +20,7 @@ defmodule HLS.Playlist.MasterTest do
   end
 
   describe "add_alternative_rendition/2" do
-    test "when to group_id has been specified yet" do
+    test "when to group_id was not specified yet" do
       raw = """
       #EXTM3U
       #EXT-X-VERSION:3
@@ -125,6 +125,31 @@ defmodule HLS.Playlist.MasterTest do
 
       [stream] = master.streams
       assert stream.subtitles == alt.group_id
+    end
+
+    test "if multiple streams are present with no group_id, only one rendition is added" do
+      raw = """
+      #EXTM3U
+      #EXT-X-VERSION:4
+      #EXT-X-INDEPENDENT-SEGMENTS
+      #EXT-X-STREAM-INF:AUDIO="program_audio_96k",AVERAGE-BANDWIDTH=326266,BANDWIDTH=350451,CODECS="avc1.64000c,mp4a.40.2",FRAME-RATE=15.000,RESOLUTION=416x234,SUBTITLES="SUBTITLES"
+      stream_416x234.m3u8
+      #EXT-X-STREAM-INF:AUDIO="program_audio_96k",AVERAGE-BANDWIDTH=944170,BANDWIDTH=1038982,CODECS="avc1.640016,mp4a.40.2",FRAME-RATE=15.000,RESOLUTION=640x360,SUBTITLES="SUBTITLES"
+      stream_640x360.m3u8
+      #EXT-X-STREAM-INF:AUDIO="program_audio_96k",AVERAGE-BANDWIDTH=1370855,BANDWIDTH=1445212,CODECS="avc1.64001f,mp4a.40.2",FRAME-RATE=30.000,RESOLUTION=854x480,SUBTITLES="SUBTITLES"
+      stream_854x480.m3u8
+      #EXT-X-MEDIA:AUTOSELECT=YES,CHARACTERISTICS="vt.track.original",DEFAULT=YES,GROUP-ID="program_audio_96k",LANGUAGE="de",NAME="German Audio Track",TYPE=AUDIO,URI="stream_audio_0_96k.m3u8"
+      """
+
+      master = Playlist.unmarshal(raw, %Playlist.Master{})
+
+      master =
+        Playlist.Master.add_alternative_rendition(master, %HLS.AlternativeRendition{
+          name: "Sub",
+          type: :subtitles
+        })
+
+      assert length(master.alternative_renditions) == 2
     end
   end
 end

@@ -58,25 +58,28 @@ defmodule HLS.Playlist.Master do
     default_group_id =
       alternative.group_id || AlternativeRendition.default_group_for_type(alternative.type)
 
-    {streams, master} =
-      Enum.map_reduce(master.streams, master, fn stream, master ->
-        {group_id, stream} =
-          Map.get_and_update!(stream, alternative.type, fn
-            nil -> {default_group_id, default_group_id}
-            x -> {x, x}
-          end)
+    # first we create an alternative for each stream.
+    alternatives =
+      master.streams
+      |> Enum.map(fn stream ->
+        group_id = Map.fetch!(stream, alternative.type) || default_group_id
+        %AlternativeRendition{alternative | group_id: group_id}
+      end)
+      |> Enum.uniq_by(fn x -> x.group_id end)
 
-        alternative = %AlternativeRendition{alternative | group_id: group_id}
-
-        master = %__MODULE__{
-          master
-          | alternative_renditions: master.alternative_renditions ++ [alternative]
-        }
-
-        {stream, master}
+    streams =
+      Enum.map(master.streams, fn x ->
+        Map.update!(x, alternative.type, fn
+          nil -> default_group_id
+          x -> x
+        end)
       end)
 
-    %__MODULE__{master | streams: streams}
+    %__MODULE__{
+      master
+      | streams: streams,
+        alternative_renditions: master.alternative_renditions ++ alternatives
+    }
   end
 end
 
