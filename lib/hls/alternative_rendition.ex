@@ -17,9 +17,11 @@ defmodule HLS.AlternativeRendition do
           characteristics: [String.t()]
         }
 
-  @mandatory_keys [:type, :group_id, :name]
+  @mandatory_keys [:type, :name]
   @enforce_keys @mandatory_keys
   @optional_keys [
+    # Actually mandatory at marshal time.
+    :group_id,
     :uri,
     :language,
     :assoc_language,
@@ -32,6 +34,12 @@ defmodule HLS.AlternativeRendition do
   ]
 
   defstruct @enforce_keys ++ @optional_keys
+
+  def default_group_for_type(type) do
+    type
+    |> to_string()
+    |> String.upcase()
+  end
 
   def from_tag(%Tag{id: id, attributes: attrs}) do
     if id != Tag.AlternativeRendition.id() do

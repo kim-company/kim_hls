@@ -19,35 +19,112 @@ defmodule HLS.Playlist.MasterTest do
     assert Playlist.unmarshal(marshaled_playlist, %Playlist.Master{}) == playlist
   end
 
-  test "adds alternative renditions" do
-    raw_playlist = File.read!(@playlist_file)
-    playlist = Playlist.unmarshal(raw_playlist, %Playlist.Master{})
+  describe "add_alternative_rendition/2" do
+    test "when to group_id has been specified yet" do
+      raw = """
+      #EXTM3U
+      #EXT-X-VERSION:3
+      #EXT-X-INDEPENDENT-SEGMENTS
+      #EXT-X-STREAM-INF:BANDWIDTH=334400,AVERAGE-BANDWIDTH=325600,CODECS="avc1.42c01e,mp4a.40.2",RESOLUTION=416x234,FRAME-RATE=15.000
+      stream_416x234.m3u8
+      """
 
-    alternative = %HLS.AlternativeRendition{
-      type: :audio,
-      group_id: "program_audio_96k",
-      name: "English 1",
-      uri: %URI{
-        scheme: nil,
-        userinfo: nil,
-        host: nil,
-        port: nil,
-        path: "stream_audio_abc_96k.m3u8",
-        query: nil,
-        fragment: nil
-      },
-      language: "eng",
-      assoc_language: nil,
-      autoselect: false,
-      default: false,
-      forced: nil,
-      instream_id: nil,
-      channels: nil,
-      characteristics: nil
-    }
+      master = Playlist.unmarshal(raw, %Playlist.Master{})
 
-    assert Enum.count(playlist.alternative_renditions) == 9
-    playlist = Playlist.Master.add_alternative_renditions(playlist, [alternative])
-    assert Enum.count(playlist.alternative_renditions) == 10
+      master =
+        Playlist.Master.add_alternative_rendition(master, %HLS.AlternativeRendition{
+          name: "Sub",
+          type: :subtitles
+        })
+
+      [alt] = master.alternative_renditions
+      assert alt.group_id == HLS.AlternativeRendition.default_group_for_type(alt.type)
+
+      [stream] = master.streams
+      assert stream.subtitles == alt.group_id
+    end
+
+    test "when there is already a group_id for this alternative type" do
+      raw = """
+      #EXTM3U
+      #EXT-X-VERSION:3
+      #EXT-X-INDEPENDENT-SEGMENTS
+      #EXT-X-STREAM-INF:BANDWIDTH=334400,AVERAGE-BANDWIDTH=325600,CODECS="avc1.42c01e,mp4a.40.2",RESOLUTION=416x234,FRAME-RATE=15.000,SUBTITLES="SUBTITLES"
+      stream_416x234.m3u8
+      #EXT-X-MEDIA:GROUP-ID="SUBTITLES",NAME="Sub",TYPE=SUBTITLES
+      """
+
+      master = Playlist.unmarshal(raw, %Playlist.Master{})
+
+      master =
+        Playlist.Master.add_alternative_rendition(master, %HLS.AlternativeRendition{
+          name: "Another Sub",
+          type: :subtitles
+        })
+
+      [sub1, sub2] = master.alternative_renditions
+      assert sub1.group_id == sub2.group_id
+      [stream] = master.streams
+      assert stream.subtitles == sub1.group_id
+      assert stream.subtitles == sub2.group_id
+    end
+
+    test "adds more renditions in case there are multiple streams" do
+      raw = """
+      #EXTM3U
+      #EXT-X-VERSION:3
+      #EXT-X-INDEPENDENT-SEGMENTS
+      #EXT-X-STREAM-INF:BANDWIDTH=371056,AVERAGE-BANDWIDTH=326462,CODECS="avc1.64000c,mp4a.40.2",RESOLUTION=416x234,FRAME-RATE=15.000,AUDIO="program_audio_96k",SUBTITLES="subtitles"
+      stream_416x234.m3u8
+      #EXT-X-STREAM-INF:BANDWIDTH=7921349,AVERAGE-BANDWIDTH=6890633,CODECS="avc1.640028,mp4a.40.2",RESOLUTION=1920x1080,FRAME-RATE=30.000,AUDIO="program_audio_160k",SUBTITLES="subtitles"
+      stream_1920x1080.m3u8
+      #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="program_audio_96k",LANGUAGE="eng",NAME="English",AUTOSELECT=YES,DEFAULT=YES,URI="stream_audio_0_96k.m3u8"
+      #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="program_audio_160k",LANGUAGE="eng",NAME="English",AUTOSELECT=YES,DEFAULT=YES,URI="stream_audio_0_160k.m3u8"
+      """
+
+      master = Playlist.unmarshal(raw, %Playlist.Master{})
+
+      master =
+        Playlist.Master.add_alternative_rendition(master, %HLS.AlternativeRendition{
+          name: "Dubbed Content",
+          type: :audio
+        })
+
+      # We add one rendition for each group.
+      assert length(master.alternative_renditions) == 4
+
+      new_alts =
+        master.alternative_renditions
+        |> Enum.filter(fn x -> x.name == "Dubbed Content" end)
+
+      assert length(new_alts) == 2
+      group_ids = Enum.map(new_alts, fn x -> x.group_id end) |> Enum.uniq()
+      assert length(group_ids) == 2
+    end
+
+    test "if group_id is specified, simply adds the rendition" do
+      raw = """
+      #EXTM3U
+      #EXT-X-VERSION:3
+      #EXT-X-INDEPENDENT-SEGMENTS
+      #EXT-X-STREAM-INF:BANDWIDTH=334400,AVERAGE-BANDWIDTH=325600,CODECS="avc1.42c01e,mp4a.40.2",RESOLUTION=416x234,FRAME-RATE=15.000
+      stream_416x234.m3u8
+      """
+
+      master = Playlist.unmarshal(raw, %Playlist.Master{})
+
+      master =
+        Playlist.Master.add_alternative_rendition(master, %HLS.AlternativeRendition{
+          name: "Sub",
+          type: :subtitles,
+          group_id: "OTHER"
+        })
+
+      [alt] = master.alternative_renditions
+      assert alt.group_id == "OTHER"
+
+      [stream] = master.streams
+      assert stream.subtitles == alt.group_id
+    end
   end
 end

@@ -51,8 +51,32 @@ defmodule HLS.Playlist.Master do
   @spec build_media_uri(URI.t(), URI.t()) :: URI.t()
   def build_media_uri(master_uri, media_uri), do: HLS.Helper.merge_uri(master_uri, media_uri)
 
-  def add_alternative_renditions(master, alternatives) do
-    %__MODULE__{master | alternative_renditions: master.alternative_renditions ++ alternatives}
+  @spec add_alternative_rendition(t(), AlternativeRendition.t()) :: t()
+  def add_alternative_rendition(master, alternative) do
+    # Does the master playlist already contain a group_id for this alternative? If
+    # so, reuse it. Otherwise create a new one.
+    default_group_id =
+      alternative.group_id || AlternativeRendition.default_group_for_type(alternative.type)
+
+    {streams, master} =
+      Enum.map_reduce(master.streams, master, fn stream, master ->
+        {group_id, stream} =
+          Map.get_and_update!(stream, alternative.type, fn
+            nil -> {default_group_id, default_group_id}
+            x -> {x, x}
+          end)
+
+        alternative = %AlternativeRendition{alternative | group_id: group_id}
+
+        master = %__MODULE__{
+          master
+          | alternative_renditions: master.alternative_renditions ++ [alternative]
+        }
+
+        {stream, master}
+      end)
+
+    %__MODULE__{master | streams: streams}
   end
 end
 
