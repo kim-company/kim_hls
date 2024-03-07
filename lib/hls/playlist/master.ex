@@ -53,6 +53,15 @@ defmodule HLS.Playlist.Master do
 
   @spec add_alternative_rendition(t(), AlternativeRendition.t()) :: t()
   def add_alternative_rendition(master, alternative) do
+    # remove renditions which match the current one first.
+    master = %__MODULE__{
+      master
+      | alternative_renditions:
+          Enum.reject(master.alternative_renditions, fn alt ->
+            alt.uri.path == alternative.uri.path
+          end)
+    }
+
     # Does the master playlist already contain a group_id for this alternative? If
     # so, reuse it. Otherwise create a new one.
     default_group_id =

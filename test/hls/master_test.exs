@@ -33,6 +33,7 @@ defmodule HLS.Playlist.MasterTest do
 
       master =
         Playlist.Master.add_alternative_rendition(master, %HLS.AlternativeRendition{
+          uri: URI.new!("alt.m3u8"),
           name: "Sub",
           type: :subtitles
         })
@@ -51,13 +52,14 @@ defmodule HLS.Playlist.MasterTest do
       #EXT-X-INDEPENDENT-SEGMENTS
       #EXT-X-STREAM-INF:BANDWIDTH=334400,AVERAGE-BANDWIDTH=325600,CODECS="avc1.42c01e,mp4a.40.2",RESOLUTION=416x234,FRAME-RATE=15.000,SUBTITLES="SUBTITLES"
       stream_416x234.m3u8
-      #EXT-X-MEDIA:GROUP-ID="SUBTITLES",NAME="Sub",TYPE=SUBTITLES
+      #EXT-X-MEDIA:GROUP-ID="SUBTITLES",NAME="Sub",TYPE=SUBTITLES,URI="first.m3u8"
       """
 
       master = Playlist.unmarshal(raw, %Playlist.Master{})
 
       master =
         Playlist.Master.add_alternative_rendition(master, %HLS.AlternativeRendition{
+          uri: URI.new!("second.m3u8"),
           name: "Another Sub",
           type: :subtitles
         })
@@ -86,6 +88,7 @@ defmodule HLS.Playlist.MasterTest do
 
       master =
         Playlist.Master.add_alternative_rendition(master, %HLS.AlternativeRendition{
+          uri: URI.new!("alt.m3u8"),
           name: "Dubbed Content",
           type: :audio
         })
@@ -115,6 +118,7 @@ defmodule HLS.Playlist.MasterTest do
 
       master =
         Playlist.Master.add_alternative_rendition(master, %HLS.AlternativeRendition{
+          uri: URI.new!("alt.m3u8"),
           name: "Sub",
           type: :subtitles,
           group_id: "OTHER"
@@ -145,11 +149,70 @@ defmodule HLS.Playlist.MasterTest do
 
       master =
         Playlist.Master.add_alternative_rendition(master, %HLS.AlternativeRendition{
+          uri: URI.new!("alt.m3u8"),
           name: "Sub",
           type: :subtitles
         })
 
       assert length(master.alternative_renditions) == 2
+    end
+
+    test "does not add the rendition multiple times" do
+      raw = """
+      #EXTM3U
+      #EXT-X-VERSION:3
+      #EXT-X-INDEPENDENT-SEGMENTS
+      #EXT-X-STREAM-INF:BANDWIDTH=334400,AVERAGE-BANDWIDTH=325600,CODECS="avc1.42c01e,mp4a.40.2",RESOLUTION=416x234,FRAME-RATE=15.000
+      stream_416x234.m3u8
+      """
+
+      master =
+        raw
+        |> Playlist.unmarshal(%Playlist.Master{})
+        |> Playlist.Master.add_alternative_rendition(%HLS.AlternativeRendition{
+          uri: URI.new!("alt.m3u8"),
+          name: "Sub",
+          type: :subtitles,
+          group_id: "OTHER"
+        })
+        |> Playlist.Master.add_alternative_rendition(%HLS.AlternativeRendition{
+          uri: URI.new!("alt.m3u8?v=1"),
+          name: "Sub",
+          type: :subtitles,
+          group_id: "OTHER"
+        })
+
+      assert [alt] = master.alternative_renditions
+      assert alt.group_id == "OTHER"
+      assert alt.uri == URI.new!("alt.m3u8?v=1")
+
+      [stream] = master.streams
+      assert stream.subtitles == alt.group_id
+    end
+
+    test "if multiple groups are present, adds the new rendition to each group" do
+      raw = """
+      #EXTM3U
+      #EXT-X-VERSION:3
+      #EXT-X-INDEPENDENT-SEGMENTS
+      #EXT-X-STREAM-INF:AUDIO="program_audio_96k",AVERAGE-BANDWIDTH=326266,BANDWIDTH=350451,CODECS="avc1.64000c,mp4a.40.2",FRAME-RATE=15.000,RESOLUTION=416x234
+      stream_416x234.m3u8
+      #EXT-X-STREAM-INF:AUDIO="program_audio_128k",AVERAGE-BANDWIDTH=944170,BANDWIDTH=1038982,CODECS="avc1.640016,mp4a.40.2",FRAME-RATE=15.000,RESOLUTION=640x360
+      stream_640x360.m3u8
+      #EXT-X-MEDIA:AUTOSELECT=YES,DEFAULT=YES,GROUP-ID="program_audio_96k",LANGUAGE="de",NAME="German Audio Track",TYPE=AUDIO,URI="stream_audio_0_96k.m3u8"
+      #EXT-X-MEDIA:AUTOSELECT=YES,DEFAULT=YES,GROUP-ID="program_audio_128k",LANGUAGE="de",NAME="German Audio Track",TYPE=AUDIO,URI="stream_audio_0_128k.m3u8"
+      """
+
+      master =
+        raw
+        |> Playlist.unmarshal(%Playlist.Master{})
+        |> Playlist.Master.add_alternative_rendition(%HLS.AlternativeRendition{
+          uri: URI.new!("alt.m3u8?v=1"),
+          name: "Sub",
+          type: :audio
+        })
+
+      assert 4 = length(master.alternative_renditions)
     end
   end
 end
