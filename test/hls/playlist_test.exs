@@ -147,6 +147,35 @@ defmodule HLS.PlaylistTest do
       assert Enum.count(Master.variant_streams(manifest)) == 1
       assert Enum.count(manifest.alternative_renditions) == 1
     end
+
+    test "with alternative renditions, characteristics as []" do
+      content = """
+      #EXTM3U
+      #EXT-X-VERSION:7
+      #EXT-X-STREAM-INF:BANDWIDTH=1187651,CODECS="avc1.42e00a
+      muxed_video_480x270.m3u8
+      """
+
+      lines =
+        content
+        |> Playlist.unmarshal(%Master{})
+        |> Playlist.Master.add_alternative_rendition(%HLS.AlternativeRendition{
+          uri: URI.new!("subtitles.m3u8"),
+          type: :subtitles,
+          name: "test",
+          characteristics: []
+        })
+        |> Playlist.marshal()
+        |> String.split("\n")
+
+      assert lines == [
+               "#EXTM3U",
+               "#EXT-X-VERSION:7",
+               "#EXT-X-STREAM-INF:BANDWIDTH=1187651,CODECS=\"avc1.42e00a\",SUBTITLES=\"SUBTITLES\"",
+               "muxed_video_480x270.m3u8",
+               "#EXT-X-MEDIA:GROUP-ID=\"SUBTITLES\",NAME=\"test\",TYPE=SUBTITLES,URI=\"subtitles.m3u8\""
+             ]
+    end
   end
 
   describe "Unmarshal Master Playlist" do

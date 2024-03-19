@@ -141,7 +141,7 @@ defimpl HLS.Playlist.Marshaler, for: HLS.Playlist.Master do
     [
       "#EXTM3U",
       "#EXT-X-VERSION:#{playlist.version}",
-      playlist.independent_segments && "#EXT-X-INDEPENDENT-SEGMENTS",
+      if(playlist.independent_segments, do: "#EXT-X-INDEPENDENT-SEGMENTS"),
       marshal_stream_inf(playlist.streams),
       marshal_media(playlist.alternative_renditions)
     ]
@@ -187,6 +187,9 @@ defimpl HLS.Playlist.Marshaler, for: HLS.Playlist.Master do
     attributes
     |> Enum.sort()
     |> Enum.map(&prepare_attributes/1)
+    # Avoid streamvalidator complaining about
+    # Error: #EXT-X-MEDIA: CHARACTERISTICS: Empty or blank attribute value
+    |> Enum.filter(fn {_key, value} -> value != "" end)
     |> Enum.map_join(",", fn {key, value} ->
       value =
         case value do
