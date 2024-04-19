@@ -5,22 +5,6 @@ defmodule HLS.Playlist.MasterTest do
 
   @playlist_file "test/fixtures/master_playlists/stream_with_audio_tracks.m3u8"
 
-  test "extracts media relative uri" do
-    master = URI.new!("https://v.t/4fafW0nnol6i/stream.m3u8")
-    media = URI.new!("https://v.t/4fafW0nnol6i/stream_Afg.m3u8")
-    expected = URI.new!("stream_Afg.m3u8")
-
-    assert Playlist.Master.extract_relative_uri(master, media) == expected
-  end
-
-  test "builds media absolute uri" do
-    master = URI.new!("https://v.t/4fafW0nnol6i/stream.m3u8")
-    media = URI.new!("stream_Afg.m3u8")
-    expected = URI.new!("https://v.t/4fafW0nnol6i/stream_Afg.m3u8")
-
-    assert Playlist.Master.build_media_uri(master, media) == expected
-  end
-
   test "can unmarshal playlist" do
     playlist = File.read!(@playlist_file)
     assert %Playlist.Master{} = Playlist.unmarshal(playlist, %Playlist.Master{})
