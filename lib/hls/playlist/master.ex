@@ -12,24 +12,13 @@ defmodule HLS.Playlist.Master do
   defstruct [:version, :independent_segments, :uri, streams: [], alternative_renditions: []]
 
   @doc """
-  Returns the variant streams of this playlist. If the master playlist is
-  equipped with an uri, creates the absolute uris of the variant streams that
-  can be used to fetch the playlist. Associates any alternative rendition
-  to each stream.
+  Returns all variant streams of the playlist.
   """
   @spec variant_streams(t) :: [VariantStream.t()]
-  def variant_streams(master = %__MODULE__{streams: streams}) do
-    streams
-    |> Enum.map(fn stream ->
-      uri = build_media_uri(master.uri, stream.uri)
-      %VariantStream{stream | uri: uri}
-    end)
-  end
+  def variant_streams(%__MODULE__{streams: streams}), do: streams
 
   @doc """
-  Use this function to obtain the alternative renditions for a stream. If
-  the playlist has an uri, alternative rendition's uri will be updated such
-  that it is fetchable.
+  Returns the alternative renditions for this stream.
   """
   @spec filter_alternative_renditions_for_stream(VariantStream.t(), t()) :: [
           AlternativeRendition.t()
@@ -39,16 +28,12 @@ defmodule HLS.Playlist.Master do
 
     master.alternative_renditions
     |> Enum.filter(fn rendition -> Enum.member?(group_ids, rendition.group_id) end)
-    |> Enum.map(fn rendition ->
-      uri = build_media_uri(master.uri, rendition.uri)
-      %AlternativeRendition{rendition | uri: uri}
-    end)
   end
 
   @doc """
-  Builds playlist's uri relative to its master playlist.
+  Builds alternative rendition absolute uri.
   """
-  @spec build_media_uri(URI.t(), URI.t()) :: URI.t()
+  @spec build_media_uri(master :: URI.t(), rendition :: URI.t()) :: URI.t()
   def build_media_uri(master_uri, media_uri), do: HLS.Helper.merge_uri(master_uri, media_uri)
 
   @spec add_alternative_rendition(t(), AlternativeRendition.t()) :: t()
