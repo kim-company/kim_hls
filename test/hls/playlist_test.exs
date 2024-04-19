@@ -449,4 +449,40 @@ defmodule HLS.PlaylistTest do
       assert third.discontinuity == false
     end
   end
+
+  describe "build_absolute_uri/2" do
+    test "when the child is a relative path" do
+      master = URI.new!("https://v.t/4fafW0nnol6i/stream.m3u8")
+      media = URI.new!("stream_Afg.m3u8")
+      expected = URI.new!("https://v.t/4fafW0nnol6i/stream_Afg.m3u8")
+      assert Playlist.build_absolute_uri(master, media) == expected
+    end
+
+    test "when the child is an absolute uri" do
+      master = URI.new!("https://v.t/4fafW0nnol6i/stream.m3u8")
+      media = URI.new!("https://v.t/4fafW0nnol6i/stream_Afg.m3u8")
+      expected = URI.new!("https://v.t/4fafW0nnol6i/stream_Afg.m3u8")
+      assert Playlist.build_absolute_uri(master, media) == expected
+
+      media = URI.new!("https://a.t/abc/stream_Afg.m3u8")
+      expected = URI.new!("https://a.t/abc/stream_Afg.m3u8")
+      assert Playlist.build_absolute_uri(master, media) == expected
+    end
+  end
+
+  describe "extract_relative_uri/2" do
+    test "when child is realtive to master" do
+      master = URI.new!("https://v.t/4fafW0nnol6i/stream.m3u8")
+      media = URI.new!("https://v.t/4fafW0nnol6i/stream_Afg.m3u8")
+      expected = URI.new!("stream_Afg.m3u8")
+      assert Playlist.extract_relative_uri(master, media) == expected
+    end
+
+    test "when child is absolute" do
+      master = URI.new!("https://v.t/4fafW0nnol6i/stream.m3u8")
+      media = URI.new!("https://a.t/abc/stream_Afg.m3u8")
+      expected = URI.new!("https://a.t/abc/stream_Afg.m3u8")
+      assert Playlist.extract_relative_uri(master, media) == expected
+    end
+  end
 end

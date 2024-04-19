@@ -36,6 +36,13 @@ defmodule HLS.Playlist.Master do
   @spec build_media_uri(master :: URI.t(), rendition :: URI.t()) :: URI.t()
   def build_media_uri(master_uri, media_uri), do: HLS.Helper.merge_uri(master_uri, media_uri)
 
+  @spec extract_relative_uri(master :: URI.t(), rendition :: URI.t()) :: URI.t()
+  def extract_relative_uri(master_uri, media_uri) do
+    master_base_path = Path.dirname(master_uri.path)
+    relative = String.trim_leading(media_uri.path, master_base_path <> "/")
+    %URI{path: relative}
+  end
+
   @spec add_alternative_rendition(t(), AlternativeRendition.t()) :: t()
   def add_alternative_rendition(master, alternative) do
     # remove renditions which match the current one first.

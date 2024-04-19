@@ -65,4 +65,24 @@ defmodule HLS.Playlist do
   def marshal(playlist) do
     Marshaler.marshal(playlist)
   end
+
+  @doc """
+
+  """
+  @spec build_absolute_uri(master_or_media :: URI.t(), rendition_or_segment :: URI.t()) :: URI.t()
+  def build_absolute_uri(master_uri, media_uri), do: HLS.Helper.merge_uri(master_uri, media_uri)
+
+  @spec extract_relative_uri(master_or_media :: URI.t(), rendition_or_segment :: URI.t()) ::
+          URI.t()
+  def extract_relative_uri(master_uri, media_uri) do
+    master_base_path = Path.dirname(master_uri.path)
+    relative_base_path = Path.dirname(media_uri.path)
+
+    if master_base_path == relative_base_path and master_uri.host == media_uri.host do
+      relative = String.trim_leading(media_uri.path, master_base_path <> "/")
+      %URI{path: relative}
+    else
+      media_uri
+    end
+  end
 end
