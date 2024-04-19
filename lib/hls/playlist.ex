@@ -67,11 +67,17 @@ defmodule HLS.Playlist do
   end
 
   @doc """
-
+  Given a master or media playlist and its child resource, like segment, builds
+  the absolute URI that can be used to fetch it. The .m3u8 allows such resources
+  to be absolute URIs on their own. This function respects it leaving the child
+  resource as is.
   """
   @spec build_absolute_uri(master_or_media :: URI.t(), rendition_or_segment :: URI.t()) :: URI.t()
   def build_absolute_uri(master_uri, media_uri), do: HLS.Helper.merge_uri(master_uri, media_uri)
 
+  @doc """
+  Extracts the relative URI of a child resource, if possible.
+  """
   @spec extract_relative_uri(master_or_media :: URI.t(), rendition_or_segment :: URI.t()) ::
           URI.t()
   def extract_relative_uri(master_uri, media_uri) do
