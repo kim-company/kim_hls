@@ -11,6 +11,16 @@ defmodule HLS.Playlist.Master do
         }
   defstruct [:version, :independent_segments, :uri, streams: [], alternative_renditions: []]
 
+  defmodule DuplicateError do
+    defexception [:message]
+
+    @impl true
+    def exception(rendition) do
+      msg = "A rendition with name #{rendition.name} is already present in the playlist"
+      %__MODULE__{message: msg}
+    end
+  end
+
   @doc """
   Returns all variant streams of the playlist.
   """
@@ -32,14 +42,15 @@ defmodule HLS.Playlist.Master do
 
   @spec add_alternative_rendition(t(), AlternativeRendition.t()) :: t()
   def add_alternative_rendition(master, alternative) do
-    # remove renditions which match the current one first.
-    master = %__MODULE__{
-      master
-      | alternative_renditions:
-          Enum.reject(master.alternative_renditions, fn alt ->
-            alt.uri.path == alternative.uri.path
-          end)
-    }
+    # Check that a rendition with this name is not already present.
+    already_present =
+      master.alternative_renditions
+      |> Enum.filter(fn alt -> alt.name == alternative.name end)
+      |> Enum.any?()
+
+    if already_present do
+      raise __MODULE__.DuplicateError, alternative
+    end
 
     # Does the master playlist already contain a group_id for this alternative? If
     # so, reuse it. Otherwise create a new one.

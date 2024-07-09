@@ -468,6 +468,29 @@ defmodule HLS.PlaylistTest do
       expected = URI.new!("https://a.t/abc/stream_Afg.m3u8")
       assert Playlist.build_absolute_uri(master, media) == expected
     end
+
+    test "bbc" do
+      master =
+        URI.new!(
+          "http://a.files.bbci.co.uk/media/live/manifesto/audio/simulcast/hls/nonuk/sbr_low/ak/bbc_world_service.m3u8"
+        )
+
+      media =
+        URI.new!(
+          "http://as-hls-ww-live.akamaized.net/pool_904/live/ww/bbc_world_service/bbc_world_service.isml/bbc_world_service-audio%3d96000.norewind.m3u8"
+        )
+
+      assert Playlist.build_absolute_uri(master, media) == media
+
+      segment = URI.new!("bbc_world_service-audio=96000-268386135.ts")
+
+      expected =
+        URI.new!(
+          "http://as-hls-ww-live.akamaized.net/pool_904/live/ww/bbc_world_service/bbc_world_service.isml/bbc_world_service-audio=96000-268386135.ts"
+        )
+
+      assert Playlist.build_absolute_uri(media, segment) == expected
+    end
   end
 
   describe "extract_relative_uri/2" do
