@@ -15,8 +15,18 @@ defmodule HLS.Playlist.Master do
     defexception [:message]
 
     @impl true
-    def exception(rendition) do
-      msg = "A rendition with name #{rendition.name} is already present in the playlist"
+    def exception(name) do
+      msg = "A rendition with name #{name} is already present in the playlist"
+      %__MODULE__{message: msg}
+    end
+  end
+
+  defmodule NotFoundError do
+    defexception [:message]
+
+    @impl true
+    def exception(name) do
+      msg = "A rendition with name #{name} was not found within playlist"
       %__MODULE__{message: msg}
     end
   end
@@ -40,6 +50,38 @@ defmodule HLS.Playlist.Master do
     |> Enum.filter(fn rendition -> Enum.member?(group_ids, rendition.group_id) end)
   end
 
+  @spec set_default(t(), binary()) :: t()
+  def set_default(master, rendition_name) do
+    alts =
+      master.alternative_renditions
+      |> Enum.map(fn alt -> %AlternativeRendition{alt | default: rendition_name == alt.name} end)
+
+    %__MODULE__{master | alternative_renditions: alts}
+  end
+
+  @spec update_alternative_rendition(
+          t(),
+          binary(),
+          (AlternativeRendition.t() -> AlternativeRendition.t())
+        ) :: t()
+  def update_alternative_rendition(master, rendition_name, update_fn) do
+    is_present =
+      master.alternative_renditions
+      |> Enum.filter(fn alt -> alt.name == rendition_name end)
+      |> Enum.any?()
+
+    if not is_present do
+      raise __MODULE__.NotFoundError, rendition_name
+    end
+
+    alts =
+      Enum.map(master.alternative_renditions, fn alt ->
+        if alt.name == rendition_name, do: update_fn.(alt), else: alt
+      end)
+
+    %__MODULE__{master | alternative_renditions: alts}
+  end
+
   @spec add_alternative_rendition(t(), AlternativeRendition.t()) :: t()
   def add_alternative_rendition(master, alternative) do
     # Check that a rendition with this name is not already present.
@@ -49,7 +91,7 @@ defmodule HLS.Playlist.Master do
       |> Enum.any?()
 
     if already_present do
-      raise __MODULE__.DuplicateError, alternative
+      raise __MODULE__.DuplicateError, alternative.name
     end
 
     # Does the master playlist already contain a group_id for this alternative? If

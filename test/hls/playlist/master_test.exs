@@ -19,6 +19,175 @@ defmodule HLS.Playlist.MasterTest do
     assert Playlist.unmarshal(marshaled_playlist, %Playlist.Master{}) == playlist
   end
 
+  describe "set_default/2" do
+    test "sets a rendition as default" do
+      raw = """
+      #EXTM3U
+      #EXT-X-VERSION:3
+      #EXT-X-INDEPENDENT-SEGMENTS
+      #EXT-X-STREAM-INF:BANDWIDTH=334400,AVERAGE-BANDWIDTH=325600,CODECS="avc1.42c01e,mp4a.40.2",RESOLUTION=416x234,FRAME-RATE=15.000
+      stream_416x234.m3u8
+      """
+
+      master =
+        raw
+        |> Playlist.unmarshal(%Playlist.Master{})
+        |> Playlist.Master.add_alternative_rendition(%HLS.AlternativeRendition{
+          uri: URI.new!("alt.m3u8"),
+          name: "Sub",
+          type: :audio
+        })
+
+      defaults =
+        master.alternative_renditions
+        |> Enum.filter(fn alt -> alt.default end)
+        |> Enum.any?()
+
+      refute defaults
+
+      master = Playlist.Master.set_default(master, "Sub")
+
+      defaults =
+        master.alternative_renditions
+        |> Enum.filter(fn alt -> alt.default end)
+        |> Enum.any?()
+
+      assert defaults
+    end
+
+    test "when changing the default rendition, the previous default is set back to false" do
+      raw = """
+      #EXTM3U
+      #EXT-X-VERSION:3
+      #EXT-X-INDEPENDENT-SEGMENTS
+      #EXT-X-STREAM-INF:BANDWIDTH=334400,AVERAGE-BANDWIDTH=325600,CODECS="avc1.42c01e,mp4a.40.2",RESOLUTION=416x234,FRAME-RATE=15.000
+      stream_416x234.m3u8
+      """
+
+      master =
+        raw
+        |> Playlist.unmarshal(%Playlist.Master{})
+        |> Playlist.Master.add_alternative_rendition(%HLS.AlternativeRendition{
+          uri: URI.new!("alt.m3u8"),
+          default: true,
+          name: "A1",
+          type: :audio
+        })
+        |> Playlist.Master.add_alternative_rendition(%HLS.AlternativeRendition{
+          uri: URI.new!("alt.m3u8"),
+          default: false,
+          name: "A2",
+          type: :audio
+        })
+
+      defaults =
+        master.alternative_renditions
+        |> Enum.filter(fn alt -> alt.default end)
+        |> Enum.count()
+
+      assert defaults == 1
+
+      master = Playlist.Master.set_default(master, "A2")
+
+      defaults =
+        master.alternative_renditions
+        |> Enum.filter(fn alt -> alt.default end)
+
+      assert Enum.count(defaults) == 1
+      assert List.first(defaults).name == "A2"
+    end
+  end
+
+  describe "update_alternative_rendition/3" do
+    test "raises when the rendition does not exist" do
+      raw = """
+      #EXTM3U
+      #EXT-X-VERSION:3
+      #EXT-X-INDEPENDENT-SEGMENTS
+      #EXT-X-STREAM-INF:BANDWIDTH=334400,AVERAGE-BANDWIDTH=325600,CODECS="avc1.42c01e,mp4a.40.2",RESOLUTION=416x234,FRAME-RATE=15.000
+      stream_416x234.m3u8
+      """
+
+      master = Playlist.unmarshal(raw, %Playlist.Master{})
+
+      assert_raise(Playlist.Master.NotFoundError, fn ->
+        Playlist.Master.update_alternative_rendition(master, "A", %HLS.AlternativeRendition{
+          uri: URI.new!("alt.m3u8"),
+          name: "Sub",
+          type: :subtitles
+        })
+      end)
+    end
+
+    test "updates the rendition's attributes" do
+      raw = """
+      #EXTM3U
+      #EXT-X-VERSION:3
+      #EXT-X-INDEPENDENT-SEGMENTS
+      #EXT-X-STREAM-INF:BANDWIDTH=334400,AVERAGE-BANDWIDTH=325600,CODECS="avc1.42c01e,mp4a.40.2",RESOLUTION=416x234,FRAME-RATE=15.000
+      stream_416x234.m3u8
+      """
+
+      new_alt = %HLS.AlternativeRendition{
+        uri: URI.new!("alt-2.m3u8"),
+        name: "A",
+        type: :subtitles
+      }
+
+      master =
+        raw
+        |> Playlist.unmarshal(%Playlist.Master{})
+        |> Playlist.Master.add_alternative_rendition(%HLS.AlternativeRendition{
+          uri: URI.new!("alt.m3u8"),
+          name: "Sub",
+          type: :subtitles
+        })
+        |> Playlist.Master.update_alternative_rendition("Sub", fn _old ->
+          new_alt
+        end)
+
+      [alt] = master.alternative_renditions
+      assert alt.name == new_alt.name
+      assert alt.uri == new_alt.uri
+    end
+
+    test "all renditions with the same name are listed" do
+      raw = """
+      #EXTM3U
+      #EXT-X-VERSION:4
+      #EXT-X-INDEPENDENT-SEGMENTS
+      #EXT-X-STREAM-INF:AUDIO="program_audio_96k",AVERAGE-BANDWIDTH=324582,BANDWIDTH=336163,CODECS="avc1.64000c,mp4a.40.2",FRAME-RATE=15.000,RESOLUTION=416x234
+      stream_416x234.m3u8
+      #EXT-X-STREAM-INF:AUDIO="program_audio_96k",AVERAGE-BANDWIDTH=936593,BANDWIDTH=978672,CODECS="avc1.640016,mp4a.40.2",FRAME-RATE=15.000,RESOLUTION=640x360
+      stream_640x360.m3u8
+      #EXT-X-STREAM-INF:AUDIO="program_audio_96k",AVERAGE-BANDWIDTH=1358699,BANDWIDTH=1413478,CODECS="avc1.64001f,mp4a.40.2",FRAME-RATE=30.000,RESOLUTION=854x480
+      stream_854x480.m3u8
+      #EXT-X-STREAM-INF:AUDIO="program_audio_160k",AVERAGE-BANDWIDTH=3565949,BANDWIDTH=3684080,CODECS="avc1.64001f,mp4a.40.2",FRAME-RATE=30.000,RESOLUTION=1280x720
+      stream_1280x720.m3u8
+      #EXT-X-STREAM-INF:AUDIO="program_audio_160k",AVERAGE-BANDWIDTH=6833506,BANDWIDTH=7165840,CODECS="avc1.640028,mp4a.40.2",FRAME-RATE=30.000,RESOLUTION=1920x1080
+      stream_1920x1080.m3u8
+      #EXT-X-MEDIA:AUTOSELECT=YES,CHANNELS="2",DEFAULT=NO,GROUP-ID="program_audio_160k",LANGUAGE="de",NAME="Ciaoone",TYPE=AUDIO,URI="stream_audio_0_160k.m3u8"
+      #EXT-X-MEDIA:AUTOSELECT=YES,CHANNELS="2",DEFAULT=NO,GROUP-ID="program_audio_96k",LANGUAGE="de",NAME="Ciaoone",TYPE=AUDIO,URI="stream_audio_0_96k.m3u8"
+      #EXT-X-MEDIA:AUTOSELECT=YES,CHARACTERISTICS="vt.track.voiceover",DEFAULT=YES,GROUP-ID="program_audio_96k",LANGUAGE="en-GB",NAME="English (United Kingdomz)",TYPE=AUDIO,URI="stream_audio_kB8B.m3u8?v=1720533339"
+      #EXT-X-MEDIA:AUTOSELECT=YES,CHARACTERISTICS="vt.track.voiceover",DEFAULT=YES,GROUP-ID="program_audio_160k",LANGUAGE="en-GB",NAME="English (United Kingdomz)",TYPE=AUDIO,URI="stream_audio_kB8B.m3u8?v=1720533339"
+      """
+
+      master =
+        raw
+        |> Playlist.unmarshal(%Playlist.Master{})
+        |> Playlist.Master.update_alternative_rendition("Ciaoone", fn alt ->
+          %HLS.AlternativeRendition{alt | name: "A"}
+        end)
+
+      count =
+        master.alternative_renditions
+        |> Enum.filter(fn alt -> alt.name == "A" end)
+        |> Enum.count()
+
+      assert count == 2
+    end
+  end
+
   describe "add_alternative_rendition/2" do
     test "when to group_id was not specified yet" do
       raw = """
