@@ -111,11 +111,29 @@ defmodule HLS.Playlist.MasterTest do
       master = Playlist.unmarshal(raw, %Playlist.Master{})
 
       assert_raise(Playlist.Master.NotFoundError, fn ->
-        Playlist.Master.update_alternative_rendition(master, "A", %HLS.AlternativeRendition{
-          uri: URI.new!("alt.m3u8"),
-          name: "Sub",
-          type: :subtitles
-        })
+        Playlist.Master.update_alternative_rendition(master, "A", fn alt -> alt end)
+      end)
+    end
+
+    test "raises when the update leads to duplicated names" do
+      raw = """
+      #EXTM3U
+      #EXT-X-VERSION:4
+      #EXT-X-INDEPENDENT-SEGMENTS
+      #EXT-X-STREAM-INF:AUDIO="program_audio_96k",AVERAGE-BANDWIDTH=324582,BANDWIDTH=336163,CODECS="avc1.64000c,mp4a.40.2",FRAME-RATE=15.000,RESOLUTION=416x234
+      stream_416x234.m3u8
+      #EXT-X-STREAM-INF:AUDIO="program_audio_160k",AVERAGE-BANDWIDTH=6833506,BANDWIDTH=7165840,CODECS="avc1.640028,mp4a.40.2",FRAME-RATE=30.000,RESOLUTION=1920x1080
+      stream_1920x1080.m3u8
+      #EXT-X-MEDIA:AUTOSELECT=YES,CHANNELS="2",DEFAULT=NO,GROUP-ID="program_audio_160k",LANGUAGE="de",NAME="A",TYPE=AUDIO,URI="stream_audio_0_160k.m3u8"
+      #EXT-X-MEDIA:AUTOSELECT=YES,CHANNELS="2",DEFAULT=NO,GROUP-ID="program_audio_96k",LANGUAGE="de",NAME="A",TYPE=AUDIO,URI="stream_audio_0_96k.m3u8"
+      #EXT-X-MEDIA:AUTOSELECT=YES,CHARACTERISTICS="vt.track.voiceover",DEFAULT=YES,GROUP-ID="program_audio_96k",LANGUAGE="en-GB",NAME="B",TYPE=AUDIO,URI="stream_audio_kB8B.m3u8?v=1720533339"
+      #EXT-X-MEDIA:AUTOSELECT=YES,CHARACTERISTICS="vt.track.voiceover",DEFAULT=YES,GROUP-ID="program_audio_160k",LANGUAGE="en-GB",NAME="B",TYPE=AUDIO,URI="stream_audio_kB8B.m3u8?v=1720533339"
+      """
+
+      master = Playlist.unmarshal(raw, %Playlist.Master{})
+
+      assert_raise(Playlist.Master.DuplicateError, fn ->
+        Playlist.Master.update_alternative_rendition(master, "A", fn alt -> %{alt | name: "B"} end)
       end)
     end
 

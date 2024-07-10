@@ -74,9 +74,22 @@ defmodule HLS.Playlist.Master do
       raise __MODULE__.NotFoundError, rendition_name
     end
 
+    names_taken =
+      master.alternative_renditions
+      |> Enum.map(fn alt -> {alt.type, alt.name} end)
+      |> Enum.group_by(fn {t, _} -> t end, fn {_, v} -> v end)
+
     alts =
       Enum.map(master.alternative_renditions, fn alt ->
-        if alt.name == rendition_name, do: update_fn.(alt), else: alt
+        if alt.name == rendition_name do
+          new_alt = update_fn.(alt)
+          names_taken = Map.get(names_taken, new_alt.type, [])
+          if new_alt.name in names_taken, do: raise(__MODULE__.DuplicateError, new_alt.name)
+
+          new_alt
+        else
+          alt
+        end
       end)
 
     %__MODULE__{master | alternative_renditions: alts}
@@ -88,6 +101,8 @@ defmodule HLS.Playlist.Master do
     already_present =
       master.alternative_renditions
       |> Enum.filter(fn alt -> alt.name == alternative.name end)
+      # We can add a rendition with the same name but different type.
+      |> Enum.filter(fn alt -> alt.type == alternative.type end)
       |> Enum.any?()
 
     if already_present do
