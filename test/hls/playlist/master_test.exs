@@ -115,6 +115,32 @@ defmodule HLS.Playlist.MasterTest do
       end)
     end
 
+    test "updating a track does not cause a duplication error" do
+      raw = """
+      #EXTM3U
+      #EXT-X-VERSION:4
+      #EXT-X-INDEPENDENT-SEGMENTS
+      #EXT-X-STREAM-INF:BANDWIDTH=338720,AVERAGE-BANDWIDTH=324617,CODECS="avc1.64000c,mp4a.40.2",RESOLUTION=416x234,FRAME-RATE=15.000,AUDIO="program_audio_96k"
+      stream_416x234.m3u8
+      #EXT-X-STREAM-INF:BANDWIDTH=994012,AVERAGE-BANDWIDTH=937893,CODECS="avc1.640016,mp4a.40.2",RESOLUTION=640x360,FRAME-RATE=15.000,AUDIO="program_audio_96k"
+      stream_640x360.m3u8
+      #EXT-X-STREAM-INF:BANDWIDTH=1435286,AVERAGE-BANDWIDTH=1360715,CODECS="avc1.64001f,mp4a.40.2",RESOLUTION=854x480,FRAME-RATE=30.000,AUDIO="program_audio_96k"
+      stream_854x480.m3u8
+      #EXT-X-STREAM-INF:BANDWIDTH=3782441,AVERAGE-BANDWIDTH=3577220,CODECS="avc1.64001f,mp4a.40.2",RESOLUTION=1280x720,FRAME-RATE=30.000,AUDIO="program_audio_160k"
+      stream_1280x720.m3u8
+      #EXT-X-STREAM-INF:BANDWIDTH=7402419,AVERAGE-BANDWIDTH=6847055,CODECS="avc1.640028,mp4a.40.2",RESOLUTION=1920x1080,FRAME-RATE=30.000,AUDIO="program_audio_160k"
+      stream_1920x1080.m3u8
+      #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="program_audio_96k",LANGUAGE="und",NAME="Audio Track",AUTOSELECT=YES,DEFAULT=YES,CHANNELS="2",URI="stream_audio_0_96k.m3u8"
+      #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="program_audio_160k",LANGUAGE="und",NAME="Audio Track",AUTOSELECT=YES,DEFAULT=YES,CHANNELS="2",URI="stream_audio_0_160k.m3u8"
+      """
+
+      raw
+      |> Playlist.unmarshal(%Playlist.Master{})
+      |> Playlist.Master.update_alternative_rendition("Audio Track", fn alt ->
+        alt
+      end)
+    end
+
     test "raises when the update leads to duplicated names" do
       raw = """
       #EXTM3U

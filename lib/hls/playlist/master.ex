@@ -84,7 +84,10 @@ defmodule HLS.Playlist.Master do
         if alt.name == rendition_name do
           new_alt = update_fn.(alt)
           names_taken = Map.get(names_taken, new_alt.type, [])
-          if new_alt.name in names_taken, do: raise(__MODULE__.DuplicateError, new_alt.name)
+
+          if alt.name != new_alt.name and new_alt.name in names_taken do
+            raise(__MODULE__.DuplicateError, new_alt.name)
+          end
 
           new_alt
         else
