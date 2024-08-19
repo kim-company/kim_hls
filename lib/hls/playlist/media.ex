@@ -126,6 +126,7 @@ defimpl HLS.Playlist.Unmarshaler, for: HLS.Playlist.Media do
       Tag.Inf,
       Tag.SegmentURI,
       Tag.Discontinuity,
+      Tag.Byterange,
       Tag.Map
     ]
   end
