@@ -11,7 +11,7 @@ defmodule HLS.Segment do
           from: pos_integer() | nil,
           discontinuity: boolean(),
           map: String.t() | nil,
-          byterange: String.t() | nil
+          byterange: %{length: pos_integer(), offset: pos_integer()} | nil
         }
 
   defstruct [
@@ -61,7 +61,7 @@ defmodule HLS.Segment do
       ref: make_ref(),
       discontinuity: discontinuity,
       map: map && map.attributes,
-      byterange: byterange && byterange.value
+      byterange: byterange && byterange.attributes
     }
   end
 

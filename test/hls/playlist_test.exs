@@ -523,10 +523,11 @@ defmodule HLS.PlaylistTest do
       first = Enum.at(segments, 0)
       second = Enum.at(segments, 1)
 
-      assert first.map == %{uri: "main.mp4", byterange: "719@0"}
-      assert first.byterange == "1508000@719"
-      assert second.map == %{uri: "main.mp4", byterange: "719@0"}
-      assert second.byterange == "1510244@1508719"
+      IO.inspect(first)
+      assert first.map == %{uri: "main.mp4", byterange: %{length: 719, offset: 0}}
+      assert first.byterange == %{length: 1_508_000, offset: 719}
+      assert second.map == %{uri: "main.mp4", byterange: %{length: 719, offset: 0}}
+      assert second.byterange == %{length: 1_510_244, offset: 1_508_719}
     end
   end
 
