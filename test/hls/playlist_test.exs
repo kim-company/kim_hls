@@ -475,6 +475,59 @@ defmodule HLS.PlaylistTest do
       assert second.discontinuity == true
       assert third.discontinuity == false
     end
+
+    test "recognizes EXT-X-MAP tag" do
+      content = """
+      #EXTM3U
+      #EXT-X-VERSION:7
+      #EXT-X-TARGETDURATION:5
+      #EXT-X-MEDIA-SEQUENCE:0
+      #EXT-X-DISCONTINUITY-SEQUENCE:0
+      #EXT-X-MAP:URI="muxed_header_video_track_part_0.mp4"
+      #EXT-X-PROGRAM-DATE-TIME:2024-08-19T12:08:16.015Z
+      #EXTINF:4.026666666,
+      muxed_segment_0_video_track.m4s
+      #EXT-X-PROGRAM-DATE-TIME:2024-08-19T12:08:16.781Z
+      #EXTINF:3.994666667,
+      muxed_segment_1_video_track.m4s
+      """
+
+      manifest = Playlist.unmarshal(content, %Media{})
+      segments = Media.segments(manifest)
+      first = Enum.at(segments, 0)
+      second = Enum.at(segments, 1)
+
+      assert first.map == %{uri: "muxed_header_video_track_part_0.mp4"}
+      assert second.map == %{uri: "muxed_header_video_track_part_0.mp4"}
+    end
+
+    test "recognizes byteranges in EXT-X-MAP and EXT-X-BYTERANGE tags" do
+      content = """
+      #EXTM3U
+      #EXT-X-TARGETDURATION:6
+      #EXT-X-VERSION:7
+      #EXT-X-MEDIA-SEQUENCE:1
+      #EXT-X-PLAYLIST-TYPE:VOD
+      #EXT-X-INDEPENDENT-SEGMENTS
+      #EXT-X-MAP:URI="main.mp4",BYTERANGE="719@0"
+      #EXTINF:6.00000,	
+      #EXT-X-BYTERANGE:1508000@719
+      main.mp4
+      #EXTINF:6.00000,	
+      #EXT-X-BYTERANGE:1510244@1508719
+      main.mp4
+      """
+
+      manifest = Playlist.unmarshal(content, %Media{})
+      segments = Media.segments(manifest)
+      first = Enum.at(segments, 0)
+      second = Enum.at(segments, 1)
+
+      assert first.map == %{uri: "main.mp4", byterange: "719@0"}
+      assert first.byterange == "1508000@719"
+      assert second.map == %{uri: "main.mp4", byterange: "719@0"}
+      assert second.byterange == "1510244@1508719"
+    end
   end
 
   describe "build_absolute_uri/2" do
