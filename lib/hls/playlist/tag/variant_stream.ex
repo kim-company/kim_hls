@@ -30,7 +30,7 @@ defmodule HLS.Playlist.Tag.VariantStream do
         {:closed_captions, val}
 
       "FRAME-RATE", val ->
-        {:frame_rate, String.to_float(val)}
+        {:frame_rate, parse_float_or_int(val)}
 
       "RESOLUTION", val ->
         [width, height] =
@@ -44,5 +44,12 @@ defmodule HLS.Playlist.Tag.VariantStream do
         :skip
     end)
     |> Map.put_new(:uri, URI.parse(stream_uri))
+  end
+
+  defp parse_float_or_int(val) do
+    case Float.parse(val) do
+      {float_val, ""} -> float_val
+      :error -> String.to_integer(val)
+    end
   end
 end

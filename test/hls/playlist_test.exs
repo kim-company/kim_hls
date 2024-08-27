@@ -251,6 +251,33 @@ defmodule HLS.PlaylistTest do
       end)
     end
 
+    test "handles integer frame-rate values" do
+      content = """
+      #EXTM3U
+      #EXT-X-VERSION:3
+      #EXT-X-STREAM-INF:BANDWIDTH=1478400,AVERAGE-BANDWIDTH=1425600,CODECS="avc1.4d4029,mp4a.40.2",RESOLUTION=854x480,FRAME-RATE=30
+      stream_854x480.m3u8
+      """
+
+      manifest = Playlist.unmarshal(content, %Master{})
+      assert %VariantStream{} = stream = List.first(Master.variant_streams(manifest))
+
+      [
+        uri: %URI{path: "stream_854x480.m3u8"},
+        bandwidth: 1_478_400,
+        average_bandwidth: 1_425_600,
+        codecs: ["avc1.4d4029", "mp4a.40.2"],
+        resolution: {854, 480},
+        frame_rate: 30.0
+      ]
+      |> Enum.each(fn {key, val} ->
+        have = Map.get(stream, key)
+
+        assert have == val,
+               "expected #{inspect(val)} on key #{inspect(key)}, have #{inspect(have)}"
+      end)
+    end
+
     test "handels complex uri specifications" do
       content = """
       #EXTM3U
