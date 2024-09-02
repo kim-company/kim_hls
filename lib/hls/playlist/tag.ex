@@ -125,7 +125,7 @@ defmodule HLS.Playlist.Tag do
   end
 
   def marshal(tag, value) do
-    marshal_id(tag.id()) <> ":" <> to_string(value)
+    marshal_id(tag.id) <> ":" <> to_string(value)
   end
 
   @spec capture_attribute_list!(
