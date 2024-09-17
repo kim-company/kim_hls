@@ -154,28 +154,21 @@ defimpl HLS.Playlist.Unmarshaler, for: HLS.Playlist.Media do
       |> Enum.map(fn {{seq, _}, val} -> {seq, val} end)
       |> Enum.into([])
       |> Enum.sort()
-      |> Enum.map(fn {_, val} -> Segment.from_tags(val) end)
-      |> Enum.map(&Segment.update_absolute_sequence(&1, sequence_number.value))
+      |> Stream.map(fn {_, val} -> Segment.from_tags(val) end)
+      |> Stream.map(&Segment.update_absolute_sequence(&1, sequence_number.value))
       # For each segment, the EXT-X-MAP is the last map we've seen so far in the playlist.
       # See https://datatracker.ietf.org/doc/html/rfc8216#section-4.3.2.5
-      |> Enum.reduce({[], nil}, fn
-        %Segment{map: map} = segment, {segments, _last_map} when map != nil ->
-          {[segment | segments], map}
+      |> Stream.transform(nil, fn
+        %Segment{map: map} = segment, _last_map when map != nil ->
+          {[segment], map}
 
-        %Segment{} = segment, {segments, last_map} ->
-          {[%Segment{segment | map: last_map} | segments], last_map}
+        %Segment{} = segment, last_map ->
+          {[%Segment{segment | map: last_map}], last_map}
       end)
-      |> then(fn {segments, _last_map} -> segments end)
-      # TODO: merge the two reduce's
-      |> Enum.reverse()
-      |> Enum.reduce([], fn
-        segment, [] ->
-          [%Segment{segment | from: 0}]
-
-        next, acc = [%Segment{from: from, duration: duration} | _] ->
-          [%Segment{next | from: from + duration} | acc]
+      |> Stream.transform(0, fn segment, acc ->
+        {[%Segment{segment | from: acc}], acc + segment.duration}
       end)
-      |> Enum.reverse()
+      |> Enum.to_list()
 
     %HLS.Playlist.Media{
       playlist
