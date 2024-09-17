@@ -25,8 +25,7 @@ defmodule HLS.Playlist.Media do
     type: nil,
     media_sequence_number: 0,
     version: 7,
-    segments: [],
-    map: nil
+    segments: []
   ]
 
   @spec new(URI.t(), pos_integer()) :: t()

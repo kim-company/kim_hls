@@ -490,15 +490,20 @@ defmodule HLS.PlaylistTest do
       #EXT-X-PROGRAM-DATE-TIME:2024-08-19T12:08:16.781Z
       #EXTINF:3.994666667,
       muxed_segment_1_video_track.m4s
+      #EXT-X-MAP:URI="muxed_header_video_track_part_1.mp4"
+      #EXTINF:3.994666667,
+      muxed_segment_1_video_track.m4s
       """
 
       manifest = Playlist.unmarshal(content, %Media{})
       segments = Media.segments(manifest)
       first = Enum.at(segments, 0)
       second = Enum.at(segments, 1)
+      third = Enum.at(segments, 2)
 
       assert first.map == %{uri: "muxed_header_video_track_part_0.mp4"}
       assert second.map == %{uri: "muxed_header_video_track_part_0.mp4"}
+      assert third.map == %{uri: "muxed_header_video_track_part_1.mp4"}
     end
 
     test "recognizes byteranges in EXT-X-MAP and EXT-X-BYTERANGE tags" do
@@ -523,7 +528,6 @@ defmodule HLS.PlaylistTest do
       first = Enum.at(segments, 0)
       second = Enum.at(segments, 1)
 
-      IO.inspect(first)
       assert first.map == %{uri: "main.mp4", byterange: %{length: 719, offset: 0}}
       assert first.byterange == %{length: 1_508_000, offset: 719}
       assert second.map == %{uri: "main.mp4", byterange: %{length: 719, offset: 0}}
