@@ -72,8 +72,23 @@ defimpl HLS.Playlist.Marshaler, for: HLS.Playlist.Media do
 
     segments =
       segments
-      |> Enum.map(fn %Segment{duration: duration, uri: uri} ->
-        [Tag.marshal(Tag.Inf, duration) <> ",", to_string(uri)]
+      |> Stream.transform(nil, fn segment, last ->
+        if segment.init_section == last do
+          {[%{segment | init_section: nil}], last}
+        else
+          {[segment], segment.init_section}
+        end
+      end)
+      |> Stream.map(fn %Segment{duration: duration, uri: uri} = segment ->
+        [
+          segment.init_section &&
+            Tag.marshal(Tag.Map, Tag.Map.marshal_uri_and_byterange(segment.init_section)),
+          Tag.marshal(Tag.Inf, duration) <> ",",
+          segment.byterange &&
+            Tag.marshal(Tag.Byterange, Tag.Byterange.marshal(segment.byterange)),
+          to_string(uri)
+        ]
+        |> Enum.reject(&is_nil/1)
         |> Enum.join("\n")
       end)
       |> Enum.join("\n")
@@ -124,7 +139,9 @@ defimpl HLS.Playlist.Unmarshaler, for: HLS.Playlist.Media do
       Tag.EndList,
       Tag.Inf,
       Tag.SegmentURI,
-      Tag.Discontinuity
+      Tag.Discontinuity,
+      Tag.Byterange,
+      Tag.Map
     ]
   end
 
@@ -152,16 +169,21 @@ defimpl HLS.Playlist.Unmarshaler, for: HLS.Playlist.Media do
       |> Enum.map(fn {{seq, _}, val} -> {seq, val} end)
       |> Enum.into([])
       |> Enum.sort()
-      |> Enum.map(fn {_, val} -> Segment.from_tags(val) end)
-      |> Enum.map(&Segment.update_absolute_sequence(&1, sequence_number.value))
-      |> Enum.reduce([], fn
-        segment, [] ->
-          [%Segment{segment | from: 0}]
+      |> Stream.map(fn {_, val} -> Segment.from_tags(val) end)
+      |> Stream.map(&Segment.update_absolute_sequence(&1, sequence_number.value))
+      # For each segment, the EXT-X-MAP is the last map we've seen so far in the playlist.
+      # See https://datatracker.ietf.org/doc/html/rfc8216#section-4.3.2.5
+      |> Stream.transform(nil, fn
+        %Segment{init_section: init_section} = segment, _last when init_section != nil ->
+          {[segment], init_section}
 
-        next, acc = [%Segment{from: from, duration: duration} | _] ->
-          [%Segment{next | from: from + duration} | acc]
+        %Segment{} = segment, last ->
+          {[%Segment{segment | init_section: last}], last}
       end)
-      |> Enum.reverse()
+      |> Stream.transform(0, fn segment, acc ->
+        {[%Segment{segment | from: acc}], acc + segment.duration}
+      end)
+      |> Enum.to_list()
 
     %HLS.Playlist.Media{
       playlist

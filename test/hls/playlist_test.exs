@@ -111,6 +111,56 @@ defmodule HLS.PlaylistTest do
       playlist = %Media{playlist | finished: true, type: :vod}
       assert Playlist.marshal(playlist) == String.replace(marshaled, " ", "", global: true)
     end
+
+    test "with EXT-X-MAP tags", %{playlist: playlist} do
+      marshaled = """
+        #EXTM3U
+        #EXT-X-VERSION:7
+        #EXT-X-TARGETDURATION:3
+        #EXT-X-MEDIA-SEQUENCE:0
+        #EXT-X-MAP:URI="main_1.mp4",BYTERANGE="719@0"
+        #EXTINF:3.0,
+        #EXT-X-BYTERANGE:1508000@719
+        data/0.ts
+        #EXTINF:2.0,
+        #EXT-X-BYTERANGE:1510244@1508719
+        data/1.ts
+        #EXT-X-MAP:URI="main_2.mp4",BYTERANGE="1510244@1508719"
+        #EXTINF:2.0,
+        data/2.ts
+      """
+
+      segments =
+        [
+          %Segment{
+            duration: 3.0,
+            init_section: %{uri: "main_1.mp4", byterange: %{offset: 0, length: 719}},
+            byterange: %{offset: 719, length: 1_508_000}
+          },
+          %Segment{
+            duration: 2.0,
+            init_section: %{uri: "main_1.mp4", byterange: %{offset: 0, length: 719}},
+            byterange: %{offset: 1_508_719, length: 1_510_244}
+          },
+          %Segment{
+            duration: 2.0,
+            init_section: %{uri: "main_2.mp4", byterange: %{offset: 1_508_719, length: 1_510_244}}
+          }
+        ]
+        |> Enum.with_index()
+        |> Enum.map(fn {seg, index} ->
+          %Segment{
+            seg
+            | uri: URI.new!("data/#{index}.ts"),
+              absolute_sequence: index,
+              relative_sequence: index
+          }
+        end)
+
+      playlist = %{playlist | segments: segments}
+
+      assert Playlist.marshal(playlist) == String.replace(marshaled, " ", "", global: true)
+    end
   end
 
   describe "Marshal Master Playlist" do
@@ -474,6 +524,64 @@ defmodule HLS.PlaylistTest do
       assert first.discontinuity == false
       assert second.discontinuity == true
       assert third.discontinuity == false
+    end
+
+    test "recognizes EXT-X-MAP tag" do
+      content = """
+      #EXTM3U
+      #EXT-X-VERSION:7
+      #EXT-X-TARGETDURATION:5
+      #EXT-X-MEDIA-SEQUENCE:0
+      #EXT-X-DISCONTINUITY-SEQUENCE:0
+      #EXT-X-MAP:URI="muxed_header_video_track_part_0.mp4"
+      #EXT-X-PROGRAM-DATE-TIME:2024-08-19T12:08:16.015Z
+      #EXTINF:4.026666666,
+      muxed_segment_0_video_track.m4s
+      #EXT-X-PROGRAM-DATE-TIME:2024-08-19T12:08:16.781Z
+      #EXTINF:3.994666667,
+      muxed_segment_1_video_track.m4s
+      #EXT-X-MAP:URI="muxed_header_video_track_part_1.mp4"
+      #EXTINF:3.994666667,
+      muxed_segment_1_video_track.m4s
+      """
+
+      manifest = Playlist.unmarshal(content, %Media{})
+      segments = Media.segments(manifest)
+      first = Enum.at(segments, 0)
+      second = Enum.at(segments, 1)
+      third = Enum.at(segments, 2)
+
+      assert first.init_section == %{uri: "muxed_header_video_track_part_0.mp4"}
+      assert second.init_section == %{uri: "muxed_header_video_track_part_0.mp4"}
+      assert third.init_section == %{uri: "muxed_header_video_track_part_1.mp4"}
+    end
+
+    test "recognizes byteranges in EXT-X-MAP and EXT-X-BYTERANGE tags" do
+      content = """
+      #EXTM3U
+      #EXT-X-TARGETDURATION:6
+      #EXT-X-VERSION:7
+      #EXT-X-MEDIA-SEQUENCE:1
+      #EXT-X-PLAYLIST-TYPE:VOD
+      #EXT-X-INDEPENDENT-SEGMENTS
+      #EXT-X-MAP:URI="main.mp4",BYTERANGE="719@0"
+      #EXTINF:6.00000,	
+      #EXT-X-BYTERANGE:1508000@719
+      main.mp4
+      #EXTINF:6.00000,	
+      #EXT-X-BYTERANGE:1510244@1508719
+      main.mp4
+      """
+
+      manifest = Playlist.unmarshal(content, %Media{})
+      segments = Media.segments(manifest)
+      first = Enum.at(segments, 0)
+      second = Enum.at(segments, 1)
+
+      assert first.init_section == %{uri: "main.mp4", byterange: %{length: 719, offset: 0}}
+      assert first.byterange == %{length: 1_508_000, offset: 719}
+      assert second.init_section == %{uri: "main.mp4", byterange: %{length: 719, offset: 0}}
+      assert second.byterange == %{length: 1_510_244, offset: 1_508_719}
     end
   end
 
