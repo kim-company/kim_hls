@@ -10,7 +10,7 @@ defmodule HLS.Segment do
           absolute_sequence: pos_integer() | nil,
           from: pos_integer() | nil,
           discontinuity: boolean(),
-          map: String.t() | nil,
+          init_section: String.t() | nil,
           byterange: %{length: pos_integer(), offset: pos_integer()} | nil
         }
 
@@ -22,7 +22,7 @@ defmodule HLS.Segment do
     :from,
     :ref,
     :discontinuity,
-    :map,
+    :init_section,
     :byterange
   ]
 
@@ -52,7 +52,7 @@ defmodule HLS.Segment do
 
     byterange = Enum.find(tags, fn tag -> tag.id == :ext_x_byterange end)
 
-    map = Enum.find(tags, fn tag -> tag.id == :ext_x_map end)
+    init_section = Enum.find(tags, fn tag -> tag.id == :ext_x_map end)
 
     %__MODULE__{
       uri: uri.value,
@@ -60,7 +60,7 @@ defmodule HLS.Segment do
       relative_sequence: sequence,
       ref: make_ref(),
       discontinuity: discontinuity,
-      map: map && map.attributes,
+      init_section: init_section && init_section.attributes,
       byterange: byterange && byterange.attributes
     }
   end

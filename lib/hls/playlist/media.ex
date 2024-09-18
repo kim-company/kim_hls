@@ -72,16 +72,17 @@ defimpl HLS.Playlist.Marshaler, for: HLS.Playlist.Media do
 
     segments =
       segments
-      |> Stream.transform(nil, fn segment, last_map ->
-        if segment.map == last_map do
-          {[%{segment | map: nil}], last_map}
+      |> Stream.transform(nil, fn segment, last ->
+        if segment.init_section == last do
+          {[%{segment | init_section: nil}], last}
         else
-          {[segment], segment.map}
+          {[segment], segment.init_section}
         end
       end)
       |> Stream.map(fn %Segment{duration: duration, uri: uri} = segment ->
         [
-          segment.map && Tag.marshal(Tag.Map, Tag.Map.marshal_uri_and_byterange(segment.map)),
+          segment.init_section &&
+            Tag.marshal(Tag.Map, Tag.Map.marshal_uri_and_byterange(segment.init_section)),
           Tag.marshal(Tag.Inf, duration) <> ",",
           segment.byterange &&
             Tag.marshal(Tag.Byterange, Tag.Byterange.marshal(segment.byterange)),
@@ -173,11 +174,11 @@ defimpl HLS.Playlist.Unmarshaler, for: HLS.Playlist.Media do
       # For each segment, the EXT-X-MAP is the last map we've seen so far in the playlist.
       # See https://datatracker.ietf.org/doc/html/rfc8216#section-4.3.2.5
       |> Stream.transform(nil, fn
-        %Segment{map: map} = segment, _last_map when map != nil ->
-          {[segment], map}
+        %Segment{init_section: init_section} = segment, _last when init_section != nil ->
+          {[segment], init_section}
 
-        %Segment{} = segment, last_map ->
-          {[%Segment{segment | map: last_map}], last_map}
+        %Segment{} = segment, last ->
+          {[%Segment{segment | init_section: last}], last}
       end)
       |> Stream.transform(0, fn segment, acc ->
         {[%Segment{segment | from: acc}], acc + segment.duration}

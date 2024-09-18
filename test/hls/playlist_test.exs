@@ -134,17 +134,17 @@ defmodule HLS.PlaylistTest do
         [
           %Segment{
             duration: 3.0,
-            map: %{uri: "main_1.mp4", byterange: %{offset: 0, length: 719}},
+            init_section: %{uri: "main_1.mp4", byterange: %{offset: 0, length: 719}},
             byterange: %{offset: 719, length: 1_508_000}
           },
           %Segment{
             duration: 2.0,
-            map: %{uri: "main_1.mp4", byterange: %{offset: 0, length: 719}},
+            init_section: %{uri: "main_1.mp4", byterange: %{offset: 0, length: 719}},
             byterange: %{offset: 1_508_719, length: 1_510_244}
           },
           %Segment{
             duration: 2.0,
-            map: %{uri: "main_2.mp4", byterange: %{offset: 1_508_719, length: 1_510_244}}
+            init_section: %{uri: "main_2.mp4", byterange: %{offset: 1_508_719, length: 1_510_244}}
           }
         ]
         |> Enum.with_index()
@@ -551,9 +551,9 @@ defmodule HLS.PlaylistTest do
       second = Enum.at(segments, 1)
       third = Enum.at(segments, 2)
 
-      assert first.map == %{uri: "muxed_header_video_track_part_0.mp4"}
-      assert second.map == %{uri: "muxed_header_video_track_part_0.mp4"}
-      assert third.map == %{uri: "muxed_header_video_track_part_1.mp4"}
+      assert first.init_section == %{uri: "muxed_header_video_track_part_0.mp4"}
+      assert second.init_section == %{uri: "muxed_header_video_track_part_0.mp4"}
+      assert third.init_section == %{uri: "muxed_header_video_track_part_1.mp4"}
     end
 
     test "recognizes byteranges in EXT-X-MAP and EXT-X-BYTERANGE tags" do
@@ -578,9 +578,9 @@ defmodule HLS.PlaylistTest do
       first = Enum.at(segments, 0)
       second = Enum.at(segments, 1)
 
-      assert first.map == %{uri: "main.mp4", byterange: %{length: 719, offset: 0}}
+      assert first.init_section == %{uri: "main.mp4", byterange: %{length: 719, offset: 0}}
       assert first.byterange == %{length: 1_508_000, offset: 719}
-      assert second.map == %{uri: "main.mp4", byterange: %{length: 719, offset: 0}}
+      assert second.init_section == %{uri: "main.mp4", byterange: %{length: 719, offset: 0}}
       assert second.byterange == %{length: 1_510_244, offset: 1_508_719}
     end
   end
