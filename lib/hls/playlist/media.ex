@@ -72,8 +72,22 @@ defimpl HLS.Playlist.Marshaler, for: HLS.Playlist.Media do
 
     segments =
       segments
-      |> Enum.map(fn %Segment{duration: duration, uri: uri} ->
-        [Tag.marshal(Tag.Inf, duration) <> ",", to_string(uri)]
+      |> Stream.transform(nil, fn segment, last_map ->
+        if segment.map == last_map do
+          {[%{segment | map: nil}], last_map}
+        else
+          {[segment], segment.map}
+        end
+      end)
+      |> Stream.map(fn %Segment{duration: duration, uri: uri} = segment ->
+        [
+          segment.map && Tag.marshal(Tag.Map, Tag.Map.marshal_uri_and_byterange(segment.map)),
+          Tag.marshal(Tag.Inf, duration) <> ",",
+          segment.byterange &&
+            Tag.marshal(Tag.Byterange, Tag.Byterange.marshal(segment.byterange)),
+          to_string(uri)
+        ]
+        |> Enum.reject(&is_nil/1)
         |> Enum.join("\n")
       end)
       |> Enum.join("\n")

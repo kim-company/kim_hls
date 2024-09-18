@@ -16,4 +16,13 @@ defmodule HLS.Playlist.Tag.Map do
         :skip
     end)
   end
+
+  def marshal_uri_and_byterange(data) do
+    [
+      data.uri && "URI=\"#{data.uri}\"",
+      data.byterange && "BYTERANGE=\"#{Byterange.marshal(data.byterange)}\""
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(",")
+  end
 end

@@ -13,4 +13,12 @@ defmodule HLS.Playlist.Tag.Byterange do
         %{length: String.to_integer(length), offset: nil}
     end
   end
+
+  def marshal(data) do
+    if data.offset do
+      "#{data.length}@#{data.offset}"
+    else
+      to_string(data.length)
+    end
+  end
 end

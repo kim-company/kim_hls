@@ -111,6 +111,56 @@ defmodule HLS.PlaylistTest do
       playlist = %Media{playlist | finished: true, type: :vod}
       assert Playlist.marshal(playlist) == String.replace(marshaled, " ", "", global: true)
     end
+
+    test "with EXT-X-MAP tags", %{playlist: playlist} do
+      marshaled = """
+        #EXTM3U
+        #EXT-X-VERSION:7
+        #EXT-X-TARGETDURATION:3
+        #EXT-X-MEDIA-SEQUENCE:0
+        #EXT-X-MAP:URI="main_1.mp4",BYTERANGE="719@0"
+        #EXTINF:3.0,
+        #EXT-X-BYTERANGE:1508000@719
+        data/0.ts
+        #EXTINF:2.0,
+        #EXT-X-BYTERANGE:1510244@1508719
+        data/1.ts
+        #EXT-X-MAP:URI="main_2.mp4",BYTERANGE="1510244@1508719"
+        #EXTINF:2.0,
+        data/2.ts
+      """
+
+      segments =
+        [
+          %Segment{
+            duration: 3.0,
+            map: %{uri: "main_1.mp4", byterange: %{offset: 0, length: 719}},
+            byterange: %{offset: 719, length: 1_508_000}
+          },
+          %Segment{
+            duration: 2.0,
+            map: %{uri: "main_1.mp4", byterange: %{offset: 0, length: 719}},
+            byterange: %{offset: 1_508_719, length: 1_510_244}
+          },
+          %Segment{
+            duration: 2.0,
+            map: %{uri: "main_2.mp4", byterange: %{offset: 1_508_719, length: 1_510_244}}
+          }
+        ]
+        |> Enum.with_index()
+        |> Enum.map(fn {seg, index} ->
+          %Segment{
+            seg
+            | uri: URI.new!("data/#{index}.ts"),
+              absolute_sequence: index,
+              relative_sequence: index
+          }
+        end)
+
+      playlist = %{playlist | segments: segments}
+
+      assert Playlist.marshal(playlist) == String.replace(marshaled, " ", "", global: true)
+    end
   end
 
   describe "Marshal Master Playlist" do
