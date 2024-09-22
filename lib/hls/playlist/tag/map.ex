@@ -19,8 +19,8 @@ defmodule HLS.Playlist.Tag.Map do
 
   def marshal_uri_and_byterange(data) do
     [
-      data.uri && "URI=\"#{data.uri}\"",
-      data.byterange && "BYTERANGE=\"#{Byterange.marshal(data.byterange)}\""
+      data[:uri] && "URI=\"#{data[:uri]}\"",
+      data[:byterange] && "BYTERANGE=\"#{Byterange.marshal(data[:byterange])}\""
     ]
     |> Enum.reject(&is_nil/1)
     |> Enum.join(",")
