@@ -33,7 +33,7 @@ defmodule HLS.Packager do
       resolution: {416, 234},
       codecs: ["avc1.64000c", "mp4a.40.2"]
     },
-    segment_extension: ".fmp4",
+    segment_extension: ".m4s",
     target_segment_duration: 7
   )
   ```
@@ -201,7 +201,7 @@ defmodule HLS.Packager do
     extname =
       case stream_state.segment_extension do
         ".mp4" -> ".mp4"
-        ".fmp4" -> ".mp4"
+        ".m4s" -> ".mp4"
         other -> raise "Init section is not supported for #{other} segments."
       end
 

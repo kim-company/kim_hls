@@ -45,7 +45,7 @@ defmodule HLS.PackagerTest do
             resolution: {1920, 1080},
             codecs: []
           },
-          segment_extension: ".fmp4",
+          segment_extension: ".m4s",
           target_segment_duration: 7
         )
 
@@ -62,7 +62,7 @@ defmodule HLS.PackagerTest do
           resolution: {416, 234},
           codecs: ["avc1.64000c", "mp4a.40.2"]
         },
-        segment_extension: ".fmp4",
+        segment_extension: ".m4s",
         target_segment_duration: 7
       )
     end
@@ -81,7 +81,7 @@ defmodule HLS.PackagerTest do
             resolution: {0, 0},
             codecs: []
           },
-          segment_extension: ".fmp4",
+          segment_extension: ".m4s",
           target_segment_duration: 5
         )
       end
@@ -121,7 +121,7 @@ defmodule HLS.PackagerTest do
 
       Packager.put_segment(packager, media, <<1>>, 10_000)
 
-      uri = URI.new!("file://x/stream_video_480p/00000/stream_video_480p_00001.fmp4")
+      uri = URI.new!("file://x/stream_video_480p/00000/stream_video_480p_00001.m4s")
       assert_received {:put, ^uri, <<1>>}
 
       uri = URI.new!("file://x/stream_video_480p_pending.m3u8")
@@ -137,7 +137,7 @@ defmodule HLS.PackagerTest do
 
       packager = Packager.put_segment(packager, media, <<1>>, 10_000)
 
-      uri = URI.new!("file://x/stream_video_480p/00000/stream_video_480p_00001.fmp4")
+      uri = URI.new!("file://x/stream_video_480p/00000/stream_video_480p_00001.m4s")
       assert_received {:put, ^uri, <<1>>}
       uri = URI.new!("file://x/stream_video_480p_pending.m3u8")
       assert_received {:put, ^uri, _playlist}
@@ -161,7 +161,7 @@ defmodule HLS.PackagerTest do
 
       packager = Packager.put_segment(packager, media, <<1>>, 10_000)
 
-      uri = URI.new!("file://x/stream_video_480p/00000/stream_video_480p_00001.fmp4")
+      uri = URI.new!("file://x/stream_video_480p/00000/stream_video_480p_00001.m4s")
       assert_received {:put, ^uri, <<1>>}
       uri = URI.new!("file://x/stream_video_480p_pending.m3u8")
       assert_received {:put, ^uri, _playlist}
@@ -198,7 +198,7 @@ defmodule HLS.PackagerTest do
         resolution: {1920, 1080},
         codecs: []
       },
-      segment_extension: ".fmp4",
+      segment_extension: ".m4s",
       target_segment_duration: 7
     )
   end
