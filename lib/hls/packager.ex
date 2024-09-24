@@ -1,4 +1,83 @@
 defmodule HLS.Packager do
+  @moduledoc """
+  The `HLS.Packager` module is responsible for managing and generating media and master playlists
+  for HTTP Live Streaming (HLS). It handles various tasks such as loading and saving playlists,
+  inserting new streams, adding segments, and maintaining synchronization points for different streams.
+
+  This module is designed to support multiple streams, including variant streams and alternative renditions,
+  and to provide a mechanism for packaging them into HLS-compatible playlists. It also provides utilities 
+  for handling initial segments, appending segments to existing playlists, and syncing segments 
+  across multiple streams.
+
+  ## Usage
+
+  ### Initializing a Packager
+
+  The `new/1` function initializes a new `HLS.Packager` with a storage backend and manifest URI. 
+  It either loads an existing master playlist (if it exists) or creates a new one if no playlist is found.
+
+  Example:
+  ```elixir
+  HLS.Packager.new(
+    storage: HLS.Storage.File.new(),
+    manifest_uri: URI.new!("file://path/to/stream.m3u8")
+  )
+  ```
+
+  ### Managing Streams
+
+  You can insert a new stream using the put_stream/2 function, which allows adding variant streams
+  or alternative renditions to the packager. Streams can only be inserted before the master playlist has been written.
+
+  Example:
+  ```elixir
+  {packager, stream_id} = Packager.put_stream(packager,
+    stream: %HLS.VariantStream{
+      uri: URI.new!("stream_416x234.m3u8"),
+      bandwidth: 341_276,
+      resolution: {416, 234},
+      codecs: ["avc1.64000c", "mp4a.40.2"]
+    },
+    segment_extension: ".fmp4",
+    target_segment_duration: 7
+  )
+  ```
+
+  ### Adding the init section
+
+  The put_init_section/3 function adds or updates the initialization section (such as an MPEG-4 ‘init’ section)
+  for a stream. This section will be used for all upcoming segments and is essential for media formats like fragmented
+  MP4 where an initial header is required before media segments can be played.
+
+  If the init section has changed, it is uploaded and associated with future segments. If no payload is provided,
+  the init section is removed.
+
+  Example:
+  ```elixir
+  HLS.Packager.put_init_section(packager, stream_uri, init_segment_data)
+  ```
+
+  ### Adding Segments
+
+  The put_segment/4 function allows adding a new segment to a stream. It will update the playlist with the new segment and write it to storage.
+
+  Example:
+  ```elixir
+  HLS.Packager.put_segment(packager, stream_id, segment_data, 10.0)
+  ```
+
+  ### Synchronization and Flushing
+
+  The sync/2 function synchronizes media playlists by moving segments from the pending playlist to the main playlist, ensuring that all streams are properly aligned.
+  The flush/1 function writes any remaining segments and marks all playlists as finished.
+
+  Example:
+  ```elixir
+  HLS.Packager.sync(packager, 14)
+  HLS.Packager.flush(packager)
+  ```
+  """
+
   alias HLS.Storage
 
   @type t() :: %__MODULE__{
