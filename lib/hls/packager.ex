@@ -246,15 +246,16 @@ defmodule HLS.Packager do
 
     init_section =
       if stream_state.init_section do
-        %{uri: stream_state.init_section[:uri], byterange: nil}
+        %{uri: stream_state.init_section[:uri]}
       end
 
     # Create a new segment
-    segment = %HLS.Segment{
-      uri: segment_uri,
-      duration: duration,
-      init_section: init_section
-    }
+    segment =
+      %HLS.Segment{
+        uri: segment_uri,
+        duration: duration,
+        init_section: init_section
+      }
 
     # Upload the segment
     # TODO: Create an async API for it.

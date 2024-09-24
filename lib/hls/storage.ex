@@ -30,7 +30,7 @@ defmodule HLS.Storage.File do
 
     defp to_path(%URI{scheme: "file"} = uri) do
       [uri.host, uri.path]
-      |> Enum.reject(&is_nil/1)
+      |> Enum.reject(&(is_nil(&1) or &1 == ""))
       |> Path.join()
     end
   end
