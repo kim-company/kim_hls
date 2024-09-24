@@ -4,11 +4,6 @@ defmodule HLS.Packager do
   for HTTP Live Streaming (HLS). It handles various tasks such as loading and saving playlists,
   inserting new streams, adding segments, and maintaining synchronization points for different streams.
 
-  This module is designed to support multiple streams, including variant streams and alternative renditions,
-  and to provide a mechanism for packaging them into HLS-compatible playlists. It also provides utilities 
-  for handling initial segments, appending segments to existing playlists, and syncing segments 
-  across multiple streams.
-
   ## Usage
 
   ### Initializing a Packager
