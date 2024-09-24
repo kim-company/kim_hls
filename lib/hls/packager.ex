@@ -49,7 +49,7 @@ defmodule HLS.Packager do
 
   Example:
   ```elixir
-  HLS.Packager.put_init_section(packager, stream_uri, init_segment_data)
+  HLS.Packager.put_init_section(packager, stream_id, init_segment_data)
   ```
 
   ### Adding Segments
@@ -115,16 +115,19 @@ defmodule HLS.Packager do
 
   @doc """
   Initializes a new packager with a storage and its root manifest uri.
+  By default, the packager will raise an exception when trying to resume a
+  finished stream. This behaviour can be controlled with the `resume_finished_streams` option.
 
   ## Examples
 
       iex> HLS.Packager.new(
       ...>   storage: HLS.Storage.File.new(),
-      ...>   manifest_uri: URI.new!("file://stream.m3u8")
+      ...>   manifest_uri: URI.new!("file://stream.m3u8"),
+      ...>   resume_finished_streams: false
       ...> )
   """
   def new(opts) do
-    opts = Keyword.validate!(opts, [:storage, :manifest_uri])
+    opts = Keyword.validate!(opts, [:storage, :manifest_uri, resume_finished_streams: false])
     manifest_uri = opts[:manifest_uri]
     storage = opts[:storage]
 
@@ -136,7 +139,7 @@ defmodule HLS.Packager do
           master_written?: true,
           storage: storage,
           manifest_uri: manifest_uri,
-          streams: load_streams(storage, master)
+          streams: load_streams(storage, master, opts[:resume_finished_streams])
         }
 
       {:error, :not_found} ->
@@ -305,7 +308,7 @@ defmodule HLS.Packager do
   end
 
   @doc """
-  Writes down the remaining segments and marks all playlists as `is_finished`.
+  Writes down the remaining segments and marks all playlists as finished (EXT-X-ENDLIST).
   Deletes pending playlists.
   """
   def flush(packager) do
@@ -499,7 +502,7 @@ defmodule HLS.Packager do
     end
   end
 
-  defp load_streams(storage, master) do
+  defp load_streams(storage, master, resume_finished_streams) do
     all_streams = Enum.concat(master.streams, master.alternative_renditions)
 
     Enum.reduce(all_streams, %{}, fn stream, acc ->
@@ -508,12 +511,17 @@ defmodule HLS.Packager do
           {:ok, data} ->
             media = HLS.Playlist.unmarshal(data, %HLS.Playlist.Media{uri: stream.uri})
 
-            if media.finished do
-              raise HLS.Packager.PlaylistFinishedError,
-                message: "Cannot resume a finished media playlist: #{to_string(stream.uri)}"
-            end
+            cond do
+              media.finished and not resume_finished_streams ->
+                raise HLS.Packager.PlaylistFinishedError,
+                  message: "Cannot resume a finished media playlist: #{to_string(stream.uri)}"
 
-            media
+              resume_finished_streams ->
+                %{media | finished: false}
+
+              true ->
+                media
+            end
 
           {:error, :not_found} ->
             raise HLS.Packager.PlaylistNotFoundError,
@@ -525,7 +533,9 @@ defmodule HLS.Packager do
       pending_playlist =
         case Storage.get(storage, HLS.Playlist.build_absolute_uri(master.uri, pending_uri)) do
           {:ok, data} ->
-            HLS.Playlist.unmarshal(data, %HLS.Playlist.Media{uri: pending_uri})
+            data
+            |> HLS.Playlist.unmarshal(%HLS.Playlist.Media{uri: pending_uri})
+            |> Map.replace!(:finished, false)
 
           {:error, _error} ->
             %HLS.Playlist.Media{
@@ -553,10 +563,10 @@ defmodule HLS.Packager do
           {:ok, payload} =
             Storage.get(
               storage,
-              HLS.Playlist.Media.build_segment_uri(master.uri, last_segment.init_section)
+              HLS.Playlist.Media.build_segment_uri(master.uri, last_segment.init_section.uri)
             )
 
-          %{uri: last_segment.init_section, payload: payload}
+          %{uri: last_segment.init_section.uri, payload: payload}
         end
 
       new_stream = %StreamState{
