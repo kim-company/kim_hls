@@ -81,7 +81,7 @@ defmodule HLS.Packager do
           master_written?: boolean(),
           storage: HLS.Storage.t(),
           manifest_uri: URI.t(),
-          tracks: %{URI.t() => Track.t()}
+          tracks: %{String.t() => Track.t()}
         }
 
   defstruct [
