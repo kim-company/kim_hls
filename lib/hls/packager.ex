@@ -344,8 +344,9 @@ defmodule HLS.Packager do
   """
   def flush(packager) do
     tracks =
-      Map.new(packager.tracks, fn {id, track} ->
-        if Enum.any?(track.pending_playlist.segments) do
+      packager.tracks
+      |> Task.async_stream(
+        fn {id, track} ->
           pending_duration = HLS.Playlist.Media.compute_playlist_duration(track.pending_playlist)
 
           track =
@@ -366,10 +367,11 @@ defmodule HLS.Packager do
           :ok = write_playlist(packager, track.pending_playlist)
 
           {id, track}
-        else
-          {id, track}
-        end
-      end)
+        end,
+        timeout: :infinity,
+        ordered: false
+      )
+      |> Map.new(fn {:ok, {id, track}} -> {id, track} end)
 
     packager
     |> Map.replace!(:tracks, tracks)

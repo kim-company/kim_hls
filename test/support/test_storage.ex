@@ -10,5 +10,10 @@ defmodule HLS.Storage.Test do
       send(storage.pid, {:put, uri, binary})
       :ok
     end
+
+    def delete(storage, uri) do
+      send(storage.pid, {:delete, uri})
+      :ok
+    end
   end
 end
