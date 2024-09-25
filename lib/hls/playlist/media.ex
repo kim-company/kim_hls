@@ -81,6 +81,7 @@ defimpl HLS.Playlist.Marshaler, for: HLS.Playlist.Media do
       end)
       |> Stream.map(fn %Segment{duration: duration, uri: uri} = segment ->
         [
+          segment.discontinuity && Tag.marshal(Tag.Discontinuity),
           segment.init_section &&
             Tag.marshal(Tag.Map, Tag.Map.marshal_uri_and_byterange(segment.init_section)),
           Tag.marshal(Tag.Inf, duration) <> ",",

@@ -112,6 +112,25 @@ defmodule HLS.PlaylistTest do
       assert Playlist.marshal(playlist) == String.replace(marshaled, " ", "", global: true)
     end
 
+    test "with EXT-X-DISCONTINUITY", %{playlist: playlist} do
+      marshaled = """
+      #EXTM3U
+      #EXT-X-VERSION:7
+      #EXT-X-TARGETDURATION:3
+      #EXT-X-MEDIA-SEQUENCE:0
+      #EXTINF:3.0,
+      data/0.ts
+      #EXT-X-DISCONTINUITY
+      #EXTINF:2.0,
+      data/1.ts
+      """
+
+      [first, second] = playlist.segments
+
+      playlist = %Media{playlist | segments: [first, %{second | discontinuity: true}]}
+      assert Playlist.marshal(playlist) == String.replace(marshaled, " ", "", global: true)
+    end
+
     test "with EXT-X-MAP tags", %{playlist: playlist} do
       marshaled = """
         #EXTM3U
