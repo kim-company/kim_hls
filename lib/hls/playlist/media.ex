@@ -89,7 +89,7 @@ defimpl HLS.Playlist.Marshaler, for: HLS.Playlist.Media do
             Tag.marshal(Tag.Byterange, Tag.Byterange.marshal(segment.byterange)),
           to_string(uri)
         ]
-        |> Enum.reject(&is_nil/1)
+        |> Enum.filter(& &1)
         |> Enum.join("\n")
       end)
       |> Enum.join("\n")
