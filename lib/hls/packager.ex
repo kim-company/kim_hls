@@ -99,7 +99,8 @@ defmodule HLS.Packager do
             segment_extension: String.t(),
             init_section: nil | %{uri: URI.t(), payload: binary()},
             media_playlist: HLS.Playlist.Media.t(),
-            pending_playlist: HLS.Playlist.Media.t()
+            pending_playlist: HLS.Playlist.Media.t(),
+            discontinue_next_segment: boolean()
           }
 
     @enforce_keys [
@@ -109,7 +110,8 @@ defmodule HLS.Packager do
       :segment_count,
       :segment_extension,
       :media_playlist,
-      :pending_playlist
+      :pending_playlist,
+      :discontinue_next_segment
     ]
 
     defstruct @enforce_keys
@@ -152,6 +154,17 @@ defmodule HLS.Packager do
           tracks: %{}
         }
     end
+  end
+
+  @doc """
+  Will force that the next added segment has an `EXT-X-DISCONTINUITY` tag.
+  """
+  def discontinue_track(packager, track_id) do
+    put_in(
+      packager,
+      [Access.key!(:tracks), track_id, Access.key!(:discontinue_next_segment)],
+      true
+    )
   end
 
   @doc """
@@ -199,7 +212,8 @@ defmodule HLS.Packager do
           segment_count: 0,
           media_playlist: media_playlist,
           segment_extension: opts[:segment_extension],
-          pending_playlist: %{media_playlist | uri: to_pending_uri(stream.uri)}
+          pending_playlist: %{media_playlist | uri: to_pending_uri(stream.uri)},
+          discontinue_next_segment: false
         }
 
         put_in(packager, [Access.key!(:tracks), track_id], track)
@@ -265,7 +279,8 @@ defmodule HLS.Packager do
       %HLS.Segment{
         uri: segment_uri,
         duration: duration,
-        init_section: init_section
+        init_section: init_section,
+        discontinuity: track.discontinue_next_segment
       }
 
     # Upload the segment
@@ -287,6 +302,10 @@ defmodule HLS.Packager do
       |> update_in(
         [Access.key!(:tracks), track_id, Access.key!(:segment_count)],
         &(&1 + 1)
+      )
+      |> put_in(
+        [Access.key!(:tracks), track_id, Access.key!(:discontinue_next_segment)],
+        false
       )
 
     pending_playlist =
@@ -593,7 +612,8 @@ defmodule HLS.Packager do
         init_section: init_section,
         duration: HLS.Playlist.Media.compute_playlist_duration(media_playlist),
         media_playlist: media_playlist,
-        pending_playlist: pending_playlist
+        pending_playlist: pending_playlist,
+        discontinue_next_segment: false
       }
 
       Map.put(acc, track_id, track)
