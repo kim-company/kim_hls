@@ -320,6 +320,8 @@ defmodule HLS.Packager do
   Returns the next synchronization point which
   can then be passed to the `sync/2` function.
   """
+  def next_sync_point(%{tracks: []}, _target_duration), do: 0
+
   def next_sync_point(packager, target_duration) do
     max_duration =
       packager.tracks
