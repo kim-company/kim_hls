@@ -19,14 +19,14 @@ defmodule HLS.Packager do
   )
   ```
 
-  ### Managing Streams
+  ### Managing tracks
 
-  You can insert a new stream using the put_stream/2 function, which allows adding variant streams
-  or alternative renditions to the packager. Streams can only be inserted before the master playlist has been written.
+  You can insert a new track using the add_track/2 function, which allows adding variant streams
+  or alternative renditions to the packager. Tracks can only be inserted before the master playlist has been written.
 
   Example:
   ```elixir
-  {packager, stream_id} = Packager.put_stream(packager,
+  {packager, stream_id} = Packager.add_track(packager,
     stream: %HLS.VariantStream{
       uri: URI.new!("stream_416x234.m3u8"),
       bandwidth: 341_276,
@@ -49,21 +49,21 @@ defmodule HLS.Packager do
 
   Example:
   ```elixir
-  HLS.Packager.put_init_section(packager, stream_id, init_segment_data)
+  HLS.Packager.put_init_section(packager, track_id, init_segment_data)
   ```
 
   ### Adding Segments
 
-  The put_segment/4 function allows adding a new segment to a stream. It will update the playlist with the new segment and write it to storage.
+  The put_segment/4 function allows adding a new segment to a track. It will update the playlist with the new segment and write it to storage.
 
   Example:
   ```elixir
-  HLS.Packager.put_segment(packager, stream_id, segment_data, 10.0)
+  HLS.Packager.put_segment(packager, track_id, segment_data, 10.0)
   ```
 
   ### Synchronization and Flushing
 
-  The sync/2 function synchronizes media playlists by moving segments from the pending playlist to the main playlist, ensuring that all streams are properly aligned.
+  The sync/2 function synchronizes media playlists by moving segments from the pending playlist to the main playlist, ensuring that all trackss are properly aligned.
   The flush/1 function writes any remaining segments and marks all playlists as finished.
 
   Example:
@@ -79,17 +79,17 @@ defmodule HLS.Packager do
           master_written?: boolean(),
           storage: HLS.Storage.t(),
           manifest_uri: URI.t(),
-          streams: %{URI.t() => StreamState.t()}
+          tracks: %{URI.t() => Track.t()}
         }
 
   defstruct [
     :master_written?,
     :storage,
     :manifest_uri,
-    streams: %{}
+    tracks: %{}
   ]
 
-  defmodule StreamState do
+  defmodule Track do
     @type t() :: %__MODULE__{
             stream: HLS.VariantStream.t() | HLS.AlternativeRendition.t(),
             duration: float(),
@@ -116,18 +116,18 @@ defmodule HLS.Packager do
   @doc """
   Initializes a new packager with a storage and its root manifest uri.
   By default, the packager will raise an exception when trying to resume a
-  finished stream. This behaviour can be controlled with the `resume_finished_streams` option.
+  finished track. This behaviour can be controlled with the `resume_finished_tracks` option.
 
   ## Examples
 
       iex> HLS.Packager.new(
       ...>   storage: HLS.Storage.File.new(),
       ...>   manifest_uri: URI.new!("file://stream.m3u8"),
-      ...>   resume_finished_streams: false
+      ...>   resume_finished_tracks: false
       ...> )
   """
   def new(opts) do
-    opts = Keyword.validate!(opts, [:storage, :manifest_uri, resume_finished_streams: false])
+    opts = Keyword.validate!(opts, [:storage, :manifest_uri, resume_finished_tracks: false])
     manifest_uri = opts[:manifest_uri]
     storage = opts[:storage]
 
@@ -139,7 +139,7 @@ defmodule HLS.Packager do
           master_written?: true,
           storage: storage,
           manifest_uri: manifest_uri,
-          streams: load_streams(storage, master, opts[:resume_finished_streams])
+          tracks: load_tracks(storage, master, opts[:resume_finished_tracks])
         }
 
       {:error, :not_found} ->
@@ -147,34 +147,50 @@ defmodule HLS.Packager do
           master_written?: false,
           storage: storage,
           manifest_uri: manifest_uri,
-          streams: %{}
+          tracks: %{}
         }
     end
   end
 
   @doc """
-  Inserts a new stream or updates an existing stream.
-
-  Streams can only be updated as long as the master playlist was not written yet.
-  Trying to change the resolution or bandwidth in the ready state will lead to a `HLS.Packager.UpsertError`.
+  Finds a track from the packager.
   """
-  def put_stream(packager, opts) do
+  def get_track(packager, track_id) do
+    Map.get(packager.tracks, track_id)
+  end
+
+  @doc """
+  Checks if the given track already exists in the packager.
+  """
+  def has_track?(packager, track_id) do
+    Map.has_key?(packager.tracks, track_id)
+  end
+
+  @doc """
+  Adds a new track to the packager.
+
+  Tracks can only be added as long as the master playlist has not been written yet.
+  """
+  def add_track(packager, opts) do
     opts = Keyword.validate!(opts, [:stream, :segment_extension, :target_segment_duration])
     stream = opts[:stream]
 
     cond do
-      is_map_key(packager.streams, stream.uri) ->
-        # TODO: For now don't do anything.
-        # later we want to validate that all the options corrispond.
-        {packager, stream.uri}
+      Map.has_key?(packager.tracks, stream.uri) ->
+        raise HLS.Packager.AddTrackError,
+          message: "The track already exists."
 
-      not packager.master_written? ->
+      packager.master_written? ->
+        raise HLS.Packager.AddTrackError,
+          message: "Cannot add a new track if the master playlist was already written."
+
+      true ->
         media_playlist = %HLS.Playlist.Media{
           uri: stream.uri,
           target_segment_duration: opts[:target_segment_duration]
         }
 
-        strea_state = %StreamState{
+        track = %Track{
           stream: stream,
           duration: 0.0,
           init_section: nil,
@@ -184,22 +200,19 @@ defmodule HLS.Packager do
           pending_playlist: %{media_playlist | uri: to_pending_uri(stream.uri)}
         }
 
-        packager = put_in(packager, [Access.key!(:streams), stream.uri], strea_state)
+        packager = put_in(packager, [Access.key!(:tracks), stream.uri], track)
         {packager, stream.uri}
-
-      packager.master_written? ->
-        raise HLS.Packager.UpsertError, message: "Cannot add a new stream in the ready state."
     end
   end
 
   @doc """
   Puts a new init section that will be used for all upcoming segments.
   """
-  def put_init_section(packager, stream_id, payload) do
-    stream_state = Map.fetch!(packager.streams, stream_id)
+  def put_init_section(packager, track_id, payload) do
+    track = Map.fetch!(packager.tracks, track_id)
 
     extname =
-      case stream_state.segment_extension do
+      case track.segment_extension do
         ".mp4" -> ".mp4"
         ".m4s" -> ".mp4"
         other -> raise "Init section is not supported for #{other} segments."
@@ -210,9 +223,9 @@ defmodule HLS.Packager do
         is_nil(payload) ->
           nil
 
-        is_nil(stream_state.init_section) or stream_state.init_section.payload != payload ->
-          next_index = stream_state.segment_count + 1
-          segment_uri = relative_segment_uri(stream_state.media_playlist.uri, extname, next_index)
+        is_nil(track.init_section) or track.init_section.payload != payload ->
+          next_index = track.segment_count + 1
+          segment_uri = relative_segment_uri(track.media_playlist.uri, extname, next_index)
           uri = append_to_path(segment_uri, "_init")
 
           :ok =
@@ -225,12 +238,12 @@ defmodule HLS.Packager do
           %{uri: uri, payload: payload}
 
         true ->
-          stream_state.init_section
+          track.init_section
       end
 
     put_in(
       packager,
-      [Access.key!(:streams), stream_id, Access.key!(:init_section)],
+      [Access.key!(:tracks), track_id, Access.key!(:init_section)],
       init_section
     )
   end
@@ -238,16 +251,13 @@ defmodule HLS.Packager do
   @doc """
   Adds a new segment into the playlist.
   """
-  def put_segment(packager, stream_id, payload, duration) do
-    stream_state = Map.fetch!(packager.streams, stream_id)
-    stream_uri = stream_state.media_playlist.uri
-    next_index = stream_state.segment_count + 1
-    segment_uri = relative_segment_uri(stream_uri, stream_state.segment_extension, next_index)
+  def put_segment(packager, track_id, payload, duration) do
+    track = Map.fetch!(packager.tracks, track_id)
+    stream_uri = track.media_playlist.uri
+    next_index = track.segment_count + 1
+    segment_uri = relative_segment_uri(stream_uri, track.segment_extension, next_index)
 
-    init_section =
-      if stream_state.init_section do
-        %{uri: stream_state.init_section[:uri]}
-      end
+    init_section = if track.init_section, do: %{uri: track.init_section[:uri]}
 
     # Create a new segment
     segment =
@@ -270,16 +280,16 @@ defmodule HLS.Packager do
     packager =
       packager
       |> update_in(
-        [Access.key!(:streams), stream_uri, Access.key!(:pending_playlist)],
+        [Access.key!(:tracks), stream_uri, Access.key!(:pending_playlist)],
         fn playlist -> Map.update!(playlist, :segments, &(&1 ++ [segment])) end
       )
       |> update_in(
-        [Access.key!(:streams), stream_uri, Access.key!(:segment_count)],
+        [Access.key!(:tracks), stream_uri, Access.key!(:segment_count)],
         &(&1 + 1)
       )
 
     pending_playlist =
-      get_in(packager, [Access.key!(:streams), stream_uri, Access.key!(:pending_playlist)])
+      get_in(packager, [Access.key!(:tracks), stream_uri, Access.key!(:pending_playlist)])
 
     :ok = write_playlist(packager, pending_playlist)
 
@@ -292,8 +302,8 @@ defmodule HLS.Packager do
   """
   def next_sync_point(packager, target_duration) do
     max_duration =
-      packager.streams
-      |> Enum.map(fn {_id, stream} -> stream.duration end)
+      packager.tracks
+      |> Enum.map(fn {_id, track} -> track.duration end)
       |> Enum.max()
 
     :math.ceil(max_duration / target_duration) * target_duration
@@ -313,33 +323,36 @@ defmodule HLS.Packager do
   Deletes pending playlists.
   """
   def flush(packager) do
-    streams =
-      Map.new(packager.streams, fn {id, stream} ->
-        if Enum.any?(stream.pending_playlist.segments) do
-          pending_duration = HLS.Playlist.Media.compute_playlist_duration(stream.pending_playlist)
+    tracks =
+      Map.new(packager.tracks, fn {id, track} ->
+        if Enum.any?(track.pending_playlist.segments) do
+          pending_duration = HLS.Playlist.Media.compute_playlist_duration(track.pending_playlist)
 
-          stream = %{
-            stream
-            | duration: stream.duration + pending_duration,
-              media_playlist: %{
-                stream.media_playlist
-                | segments: stream.media_playlist.segments ++ stream.pending_playlist.segments,
+          track =
+            track
+            |> Map.update!(:duration, &(&1 + pending_duration))
+            |> Map.update!(:media_playlist, fn playlist ->
+              %{
+                playlist
+                | segments: playlist.segments ++ track.pending_playlist.segments,
                   finished: true
-              },
-              pending_playlist: %{stream.pending_playlist | segments: [], finished: true}
-          }
+              }
+            end)
+            |> Map.update!(:pending_playlist, fn playlist ->
+              %{playlist | segments: [], finished: true}
+            end)
 
-          :ok = write_playlist(packager, stream.media_playlist)
-          :ok = write_playlist(packager, stream.pending_playlist)
+          :ok = write_playlist(packager, track.media_playlist)
+          :ok = write_playlist(packager, track.pending_playlist)
 
-          {id, stream}
+          {id, track}
         else
-          {id, stream}
+          {id, track}
         end
       end)
 
     packager
-    |> Map.replace!(:streams, streams)
+    |> Map.replace!(:tracks, tracks)
     |> maybe_write_master(force: true)
   end
 
@@ -348,7 +361,7 @@ defmodule HLS.Packager do
   """
   def build_master(packager) do
     streams =
-      packager.streams
+      packager.tracks
       |> Map.values()
       |> Enum.map(& &1.stream)
 
@@ -438,20 +451,20 @@ defmodule HLS.Packager do
   end
 
   defp sync_playlists(packager, sync_point) do
-    streams =
-      Map.new(packager.streams, fn {id, stream} ->
-        updated_stream = move_segments_until_sync_point(packager, stream, sync_point)
-        {id, updated_stream}
+    tracks =
+      Map.new(packager.tracks, fn {id, track} ->
+        track = move_segments_until_sync_point(packager, track, sync_point)
+        {id, track}
       end)
 
-    %{packager | streams: streams}
+    %{packager | tracks: tracks}
   end
 
-  defp move_segments_until_sync_point(packager, stream, sync_point) do
+  defp move_segments_until_sync_point(packager, track, sync_point) do
     {moved_segments, remaining_segments, new_duration} =
       Enum.reduce_while(
-        stream.pending_playlist.segments,
-        {[], [], stream.duration},
+        track.pending_playlist.segments,
+        {[], [], track.duration},
         fn segment, {moved, remaining, duration} ->
           new_duration = duration + segment.duration
 
@@ -464,22 +477,22 @@ defmodule HLS.Packager do
         end
       )
 
-    stream = %{
-      stream
-      | duration: new_duration,
-        media_playlist: %{
-          stream.media_playlist
-          | segments: stream.media_playlist.segments ++ moved_segments
-        },
-        pending_playlist: %{stream.pending_playlist | segments: remaining_segments}
-    }
+    track =
+      track
+      |> Map.replace!(:duration, new_duration)
+      |> Map.update!(:media_playlist, fn playlist ->
+        %{playlist | segments: playlist.segments ++ moved_segments}
+      end)
+      |> Map.update!(:pending_playlist, fn playlist ->
+        %{playlist | segments: remaining_segments}
+      end)
 
     if Enum.any?(moved_segments) do
-      :ok = write_playlist(packager, stream.media_playlist)
-      :ok = write_playlist(packager, stream.pending_playlist)
+      :ok = write_playlist(packager, track.media_playlist)
+      :ok = write_playlist(packager, track.pending_playlist)
     end
 
-    stream
+    track
   end
 
   defp maybe_write_master(packager, opts \\ []) do
@@ -489,8 +502,8 @@ defmodule HLS.Packager do
       packager
     else
       all_playlists_ready? =
-        Enum.all?(packager.streams, fn {_uri, stream_state} ->
-          stream_state.duration >= stream_state.media_playlist.target_segment_duration * 3
+        Enum.all?(packager.tracks, fn {_uri, track} ->
+          track.duration >= track.media_playlist.target_segment_duration * 3
         end)
 
       if opts[:force] or all_playlists_ready? do
@@ -503,7 +516,7 @@ defmodule HLS.Packager do
     end
   end
 
-  defp load_streams(storage, master, resume_finished_streams) do
+  defp load_tracks(storage, master, resume_finished_tracks) do
     all_streams = Enum.concat(master.streams, master.alternative_renditions)
 
     Enum.reduce(all_streams, %{}, fn stream, acc ->
@@ -513,11 +526,11 @@ defmodule HLS.Packager do
             media = HLS.Playlist.unmarshal(data, %HLS.Playlist.Media{uri: stream.uri})
 
             cond do
-              media.finished and not resume_finished_streams ->
+              media.finished and not resume_finished_tracks ->
                 raise HLS.Packager.PlaylistFinishedError,
                   message: "Cannot resume a finished media playlist: #{to_string(stream.uri)}"
 
-              resume_finished_streams ->
+              resume_finished_tracks ->
                 %{media | finished: false}
 
               true ->
@@ -570,7 +583,7 @@ defmodule HLS.Packager do
           %{uri: last_segment.init_section.uri, payload: payload}
         end
 
-      new_stream = %StreamState{
+      track = %Track{
         stream: stream,
         segment_extension: segment_extension,
         segment_count: length(all_segments),
@@ -580,7 +593,7 @@ defmodule HLS.Packager do
         pending_playlist: pending_playlist
       }
 
-      Map.put(acc, stream.uri, new_stream)
+      Map.put(acc, stream.uri, track)
     end)
   end
 

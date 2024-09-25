@@ -10,6 +10,6 @@ defmodule HLS.Packager.PlaylistNotFoundError do
   defexception [:message]
 end
 
-defmodule HLS.Packager.UpsertError do
+defmodule HLS.Packager.AddTrackError do
   defexception [:message]
 end

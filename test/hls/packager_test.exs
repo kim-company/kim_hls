@@ -11,7 +11,7 @@ defmodule HLS.PackagerTest do
 
       packager = Packager.new(storage: storage, manifest_uri: manifest_uri)
       assert packager.master_written?
-      assert map_size(packager.streams) == 4
+      assert map_size(packager.tracks) == 4
     end
 
     @tag :tmp_dir
@@ -33,12 +33,12 @@ defmodule HLS.PackagerTest do
     end
   end
 
-  describe "put_stream/2" do
-    test "adds a new stream to the packager" do
+  describe "add_track/2" do
+    test "adds a new track to the packager" do
       packager = new_packager()
 
       {packager, _stream_id} =
-        Packager.put_stream(packager,
+        Packager.add_track(packager,
           stream: %HLS.VariantStream{
             uri: Packager.new_variant_uri(packager, "_video_480p"),
             bandwidth: 14_000_000,
@@ -49,32 +49,33 @@ defmodule HLS.PackagerTest do
           target_segment_duration: 7
         )
 
-      assert map_size(packager.streams) == 1
+      assert map_size(packager.tracks) == 1
     end
 
-    test "ignores the existing stream if there is a match" do
-      packager = existing_packager()
+    test "raises if the track already exists" do
+      {packager, _track} =
+        new_packager()
+        |> with_track("_416x234")
 
-      Packager.put_stream(packager,
-        stream: %HLS.VariantStream{
-          uri: URI.new!("stream_416x234.m3u8"),
-          bandwidth: 341_276,
-          resolution: {416, 234},
-          codecs: ["avc1.64000c", "mp4a.40.2"]
-        },
-        segment_extension: ".m4s",
-        target_segment_duration: 7
-      )
+      assert_raise HLS.Packager.AddTrackError, fn ->
+        Packager.add_track(packager,
+          stream: %HLS.VariantStream{
+            uri: URI.new!("stream_416x234.m3u8"),
+            bandwidth: 341_276,
+            resolution: {416, 234},
+            codecs: ["avc1.64000c", "mp4a.40.2"]
+          },
+          segment_extension: ".m4s",
+          target_segment_duration: 7
+        )
+      end
     end
 
-    # test "fails if an existing stream has different properties" do
-    # end
-
-    test "fails to add a new stream if the packager is already in its ready state" do
+    test "fails to add a new track if the packager is already in its ready state" do
       packager = existing_packager()
 
-      assert_raise HLS.Packager.UpsertError, fn ->
-        Packager.put_stream(packager,
+      assert_raise HLS.Packager.AddTrackError, fn ->
+        Packager.add_track(packager,
           stream: %HLS.VariantStream{
             uri: URI.new!("stream_new.m3u8"),
             bandwidth: 0,
@@ -92,7 +93,7 @@ defmodule HLS.PackagerTest do
     test "writes a new init segment if the previous one is different" do
       {packager, media} =
         new_packager()
-        |> with_stream("_video_480p")
+        |> with_track("_video_480p")
 
       packager
       |> Packager.put_init_section(media, <<1>>)
@@ -117,7 +118,7 @@ defmodule HLS.PackagerTest do
     test "writes segments into a pending playlist" do
       {packager, media} =
         new_packager()
-        |> with_stream("_video_480p")
+        |> with_track("_video_480p")
 
       Packager.put_segment(packager, media, <<1>>, 10_000)
 
@@ -133,7 +134,7 @@ defmodule HLS.PackagerTest do
     test "writes all pending segments up to sync_point into the media playlist" do
       {packager, media} =
         new_packager()
-        |> with_stream("_video_480p")
+        |> with_track("_video_480p")
 
       packager = Packager.put_segment(packager, media, <<1>>, 10_000)
 
@@ -157,7 +158,7 @@ defmodule HLS.PackagerTest do
     test "writes all pending segments into the media playlist" do
       {packager, media} =
         new_packager()
-        |> with_stream("_video_480p")
+        |> with_track("_video_480p")
 
       packager = Packager.put_segment(packager, media, <<1>>, 10_000)
 
@@ -190,10 +191,10 @@ defmodule HLS.PackagerTest do
     end
   end
 
-  defp with_stream(packager, stream_name) do
-    Packager.put_stream(packager,
+  defp with_track(packager, track_id) do
+    Packager.add_track(packager,
       stream: %HLS.VariantStream{
-        uri: Packager.new_variant_uri(packager, stream_name),
+        uri: Packager.new_variant_uri(packager, track_id),
         bandwidth: 14_000_000,
         resolution: {1920, 1080},
         codecs: []
