@@ -100,7 +100,8 @@ defmodule HLS.Packager do
             init_section: nil | %{uri: URI.t(), payload: binary()},
             media_playlist: HLS.Playlist.Media.t(),
             pending_playlist: HLS.Playlist.Media.t(),
-            discontinue_next_segment: boolean()
+            discontinue_next_segment: boolean(),
+            upload_tasks: [%{task_ref: Task.ref(), segment: HLS.Segment.t(), uploaded: boolean()}]
           }
 
     @enforce_keys [
@@ -111,7 +112,8 @@ defmodule HLS.Packager do
       :segment_extension,
       :media_playlist,
       :pending_playlist,
-      :discontinue_next_segment
+      :discontinue_next_segment,
+      :upload_tasks
     ]
 
     defstruct @enforce_keys
@@ -213,7 +215,8 @@ defmodule HLS.Packager do
           media_playlist: media_playlist,
           segment_extension: opts[:segment_extension],
           pending_playlist: %{media_playlist | uri: to_pending_uri(stream.uri)},
-          discontinue_next_segment: false
+          discontinue_next_segment: false,
+          upload_tasks: []
         }
 
         put_in(packager, [Access.key!(:tracks), track_id], track)
@@ -256,11 +259,85 @@ defmodule HLS.Packager do
           track.init_section
       end
 
-    put_in(
-      packager,
-      [Access.key!(:tracks), track_id, Access.key!(:init_section)],
-      init_section
-    )
+    update_track(packager, track_id, fn track -> %{track | init_section: init_section} end)
+  end
+
+  @doc """
+  Adds a new segment asynchronously to the playlist.
+  """
+  def put_segment_async(packager, track_id, payload, duration) do
+    track = Map.fetch!(packager.tracks, track_id)
+    stream_uri = track.media_playlist.uri
+    next_index = track.segment_count + 1
+    segment_uri = relative_segment_uri(stream_uri, track.segment_extension, next_index)
+
+    init_section = if track.init_section, do: %{uri: track.init_section[:uri]}
+
+    segment =
+      %HLS.Segment{
+        uri: segment_uri,
+        duration: duration,
+        init_section: init_section,
+        discontinuity: track.discontinue_next_segment
+      }
+
+    {:ok, task} =
+      Task.async(fn ->
+        :ok =
+          Storage.put(
+            packager.storage,
+            HLS.Playlist.Media.build_segment_uri(packager.manifest_uri, segment.uri),
+            payload
+          )
+      end)
+
+    packager =
+      update_track(packager, track_id, fn track ->
+        track
+        |> Map.update!(:segment_count, &(&1 + 1))
+        |> Map.replace!(:discontinue_next_segment, false)
+        |> Map.update!(:upload_tasks, fn tasks ->
+          tasks ++ [%{task_ref: task.ref, segment: segment, uploaded: false}]
+        end)
+      end)
+
+    {packager, task}
+  end
+
+  @doc """
+  Confirms a successful segment upload.
+  """
+  def ack_segment(packager, track_id, task_ref) do
+    update_track(packager, track_id, fn track ->
+      upload_tasks =
+        Enum.map(track.upload_tasks, fn upload_task ->
+          if upload_task.task_ref == task_ref do
+            %{upload_task | uploaded: true}
+          else
+            upload_task
+          end
+        end)
+
+      {finished, unfinished} = Enum.split_with(upload_tasks, & &1.uploaded)
+      finished_segments = Enum.map(finished, & &1.segment)
+
+      pending_playlist = %{
+        track.pending_playlist
+        | segments: track.pending_playlist.segments ++ finished_segments
+      }
+
+      :ok = write_playlist(packager, pending_playlist)
+
+      %{track | upload_tasks: unfinished, pending_playlist: pending_playlist}
+    end)
+  end
+
+  @doc """
+  Marks a segment upload as failed.
+  """
+  def nack_segment(_packager, _track_id, _task_ref) do
+    # TODO: Explode with more information
+    raise "Segment failed"
   end
 
   @doc """
@@ -328,7 +405,7 @@ defmodule HLS.Packager do
       |> Enum.map(fn {_id, track} -> track.duration end)
       |> Enum.max()
 
-    :math.ceil(max_duration / target_duration) * target_duration
+    ceil(max_duration / target_duration) * target_duration
   end
 
   @doc """
@@ -648,5 +725,9 @@ defmodule HLS.Packager do
     |> to_string()
     |> String.trim_leading(leading <> "_")
     |> String.trim_trailing(extname)
+  end
+
+  defp update_track(packager, track_id, callback) do
+    update_in(packager, [Access.key!(:tracks), track_id], calback)
   end
 end
