@@ -21,12 +21,14 @@ defmodule HLS.Packager do
 
   ### Managing tracks
 
-  You can insert a new track using the add_track/2 function, which allows adding variant streams
+  You can insert a new track using the add_track/3 function, which allows adding variant streams
   or alternative renditions to the packager. Tracks can only be inserted before the master playlist has been written.
 
   Example:
   ```elixir
-  {packager, stream_id} = Packager.add_track(packager,
+  {packager, stream_id} = Packager.add_track(
+    packager,
+    "416x234",
     stream: %HLS.VariantStream{
       uri: URI.new!("stream_416x234.m3u8"),
       bandwidth: 341_276,
@@ -171,12 +173,12 @@ defmodule HLS.Packager do
 
   Tracks can only be added as long as the master playlist has not been written yet.
   """
-  def add_track(packager, opts) do
+  def add_track(packager, track_id, opts) do
     opts = Keyword.validate!(opts, [:stream, :segment_extension, :target_segment_duration])
     stream = opts[:stream]
 
     cond do
-      Map.has_key?(packager.tracks, stream.uri) ->
+      Map.has_key?(packager.tracks, track_id) ->
         raise HLS.Packager.AddTrackError,
           message: "The track already exists."
 
@@ -200,8 +202,7 @@ defmodule HLS.Packager do
           pending_playlist: %{media_playlist | uri: to_pending_uri(stream.uri)}
         }
 
-        packager = put_in(packager, [Access.key!(:tracks), stream.uri], track)
-        {packager, stream.uri}
+        put_in(packager, [Access.key!(:tracks), track_id], track)
     end
   end
 
@@ -280,16 +281,16 @@ defmodule HLS.Packager do
     packager =
       packager
       |> update_in(
-        [Access.key!(:tracks), stream_uri, Access.key!(:pending_playlist)],
+        [Access.key!(:tracks), track_id, Access.key!(:pending_playlist)],
         fn playlist -> Map.update!(playlist, :segments, &(&1 ++ [segment])) end
       )
       |> update_in(
-        [Access.key!(:tracks), stream_uri, Access.key!(:segment_count)],
+        [Access.key!(:tracks), track_id, Access.key!(:segment_count)],
         &(&1 + 1)
       )
 
     pending_playlist =
-      get_in(packager, [Access.key!(:tracks), stream_uri, Access.key!(:pending_playlist)])
+      get_in(packager, [Access.key!(:tracks), track_id, Access.key!(:pending_playlist)])
 
     :ok = write_playlist(packager, pending_playlist)
 
@@ -383,12 +384,12 @@ defmodule HLS.Packager do
       ...>   storage: HLS.Storage.File.new(),
       ...>   manifest_uri: URI.new!("file://stream.m3u8")
       ...> )
-      iex> HLS.Packager.new_variant_uri(packager, "_video_480p")
+      iex> HLS.Packager.new_variant_uri(packager, "video_480p")
       URI.new!("stream_video_480p.m3u8")
   """
   def new_variant_uri(packager, suffix) do
     packager.manifest_uri
-    |> append_to_path(suffix)
+    |> append_to_path("_" <> suffix)
     |> to_string()
     |> Path.basename()
     |> URI.new!()
@@ -583,6 +584,8 @@ defmodule HLS.Packager do
           %{uri: last_segment.init_section.uri, payload: payload}
         end
 
+      track_id = uri_to_track_id(master.uri, stream.uri)
+
       track = %Track{
         stream: stream,
         segment_extension: segment_extension,
@@ -593,7 +596,7 @@ defmodule HLS.Packager do
         pending_playlist: pending_playlist
       }
 
-      Map.put(acc, stream.uri, track)
+      Map.put(acc, track_id, track)
     end)
   end
 
@@ -605,5 +608,21 @@ defmodule HLS.Packager do
       HLS.Playlist.build_absolute_uri(packager.manifest_uri, playlist.uri),
       HLS.Playlist.marshal(playlist)
     )
+  end
+
+  defp uri_to_track_id(master_uri, stream_uri) do
+    master_uri = to_string(master_uri)
+    extname = Path.extname(master_uri)
+
+    leading =
+      master_uri
+      |> to_string()
+      |> Path.basename()
+      |> String.trim_trailing(extname)
+
+    stream_uri
+    |> to_string()
+    |> String.trim_leading(leading <> "_")
+    |> String.trim_trailing(extname)
   end
 end

@@ -37,10 +37,12 @@ defmodule HLS.PackagerTest do
     test "adds a new track to the packager" do
       packager = new_packager()
 
-      {packager, _stream_id} =
-        Packager.add_track(packager,
+      packager =
+        Packager.add_track(
+          packager,
+          "video_480p",
           stream: %HLS.VariantStream{
-            uri: Packager.new_variant_uri(packager, "_video_480p"),
+            uri: Packager.new_variant_uri(packager, "video_480p"),
             bandwidth: 14_000_000,
             resolution: {1920, 1080},
             codecs: []
@@ -53,12 +55,14 @@ defmodule HLS.PackagerTest do
     end
 
     test "raises if the track already exists" do
-      {packager, _track} =
+      packager =
         new_packager()
-        |> with_track("_416x234")
+        |> with_track("416x234")
 
       assert_raise HLS.Packager.AddTrackError, fn ->
-        Packager.add_track(packager,
+        Packager.add_track(
+          packager,
+          "416x234",
           stream: %HLS.VariantStream{
             uri: URI.new!("stream_416x234.m3u8"),
             bandwidth: 341_276,
@@ -75,7 +79,9 @@ defmodule HLS.PackagerTest do
       packager = existing_packager()
 
       assert_raise HLS.Packager.AddTrackError, fn ->
-        Packager.add_track(packager,
+        Packager.add_track(
+          packager,
+          "new",
           stream: %HLS.VariantStream{
             uri: URI.new!("stream_new.m3u8"),
             bandwidth: 0,
@@ -91,17 +97,19 @@ defmodule HLS.PackagerTest do
 
   describe "put_init_section/3" do
     test "writes a new init segment if the previous one is different" do
-      {packager, media} =
+      track_id = "video_480p"
+
+      packager =
         new_packager()
-        |> with_track("_video_480p")
+        |> with_track(track_id)
 
       packager
-      |> Packager.put_init_section(media, <<1>>)
-      |> Packager.put_segment(media, <<1>>, 10_000)
-      |> Packager.put_init_section(media, <<1>>)
-      |> Packager.put_segment(media, <<1>>, 10_000)
-      |> Packager.put_init_section(media, <<2>>)
-      |> Packager.put_segment(media, <<1>>, 10_000)
+      |> Packager.put_init_section(track_id, <<1>>)
+      |> Packager.put_segment(track_id, <<1>>, 10_000)
+      |> Packager.put_init_section(track_id, <<1>>)
+      |> Packager.put_segment(track_id, <<1>>, 10_000)
+      |> Packager.put_init_section(track_id, <<2>>)
+      |> Packager.put_segment(track_id, <<1>>, 10_000)
 
       uri = URI.new!("file://x/stream_video_480p/00000/stream_video_480p_00001_init.mp4")
       assert_received {:put, ^uri, <<1>>}
@@ -116,11 +124,13 @@ defmodule HLS.PackagerTest do
 
   describe "put_segment/2" do
     test "writes segments into a pending playlist" do
-      {packager, media} =
-        new_packager()
-        |> with_track("_video_480p")
+      track_id = "video_480p"
 
-      Packager.put_segment(packager, media, <<1>>, 10_000)
+      packager =
+        new_packager()
+        |> with_track(track_id)
+
+      Packager.put_segment(packager, track_id, <<1>>, 10_000)
 
       uri = URI.new!("file://x/stream_video_480p/00000/stream_video_480p_00001.m4s")
       assert_received {:put, ^uri, <<1>>}
@@ -132,11 +142,13 @@ defmodule HLS.PackagerTest do
 
   describe "sync/1" do
     test "writes all pending segments up to sync_point into the media playlist" do
-      {packager, media} =
-        new_packager()
-        |> with_track("_video_480p")
+      track_id = "video_480p"
 
-      packager = Packager.put_segment(packager, media, <<1>>, 10_000)
+      packager =
+        new_packager()
+        |> with_track(track_id)
+
+      packager = Packager.put_segment(packager, track_id, <<1>>, 10_000)
 
       uri = URI.new!("file://x/stream_video_480p/00000/stream_video_480p_00001.m4s")
       assert_received {:put, ^uri, <<1>>}
@@ -156,11 +168,13 @@ defmodule HLS.PackagerTest do
 
   describe "flush/1" do
     test "writes all pending segments into the media playlist" do
-      {packager, media} =
-        new_packager()
-        |> with_track("_video_480p")
+      track_id = "video_480p"
 
-      packager = Packager.put_segment(packager, media, <<1>>, 10_000)
+      packager =
+        new_packager()
+        |> with_track(track_id)
+
+      packager = Packager.put_segment(packager, track_id, <<1>>, 10_000)
 
       uri = URI.new!("file://x/stream_video_480p/00000/stream_video_480p_00001.m4s")
       assert_received {:put, ^uri, <<1>>}
@@ -192,7 +206,9 @@ defmodule HLS.PackagerTest do
   end
 
   defp with_track(packager, track_id) do
-    Packager.add_track(packager,
+    Packager.add_track(
+      packager,
+      track_id,
       stream: %HLS.VariantStream{
         uri: Packager.new_variant_uri(packager, track_id),
         bandwidth: 14_000_000,
