@@ -62,12 +62,13 @@ defmodule HLS.Playlist.Master do
   @spec update_alternative_rendition(
           t(),
           binary(),
+          AlternativeRendition.type_t(),
           (AlternativeRendition.t() -> AlternativeRendition.t())
         ) :: t()
-  def update_alternative_rendition(master, rendition_name, update_fn) do
+  def update_alternative_rendition(master, rendition_name, rendition_type, update_fn) do
     is_present =
       master.alternative_renditions
-      |> Enum.filter(fn alt -> alt.name == rendition_name end)
+      |> Enum.filter(fn alt -> alt.name == rendition_name and alt.type == rendition_type end)
       |> Enum.any?()
 
     if not is_present do
@@ -81,7 +82,7 @@ defmodule HLS.Playlist.Master do
 
     alts =
       Enum.map(master.alternative_renditions, fn alt ->
-        if alt.name == rendition_name do
+        if alt.name == rendition_name and alt.type == rendition_type do
           new_alt = update_fn.(alt)
           names_taken = Map.get(names_taken, new_alt.type, [])
 
