@@ -455,13 +455,12 @@ defmodule HLS.Packager do
           alternative_tracks
           |> Enum.filter(fn track -> Enum.member?(group_ids, track.stream.group_id) end)
           |> Enum.flat_map(& &1.codecs)
-          |> MapSet.new()
 
         update_in(track, [Access.key!(:stream), Access.key!(:codecs)], fn prev_codecs ->
           prev_codecs
-          |> MapSet.new()
-          |> MapSet.union(alternative_codecs)
-          |> Enum.to_list()
+          |> Enum.concat(alternative_codecs)
+          |> Enum.concat(track.codecs)
+          |> Enum.uniq()
         end)
       end)
 
