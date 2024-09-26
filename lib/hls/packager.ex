@@ -238,8 +238,6 @@ defmodule HLS.Packager do
       true ->
         media_playlist = %HLS.Playlist.Media{
           uri: stream.uri,
-          # NOTE: We do not support :live playlists yet.
-          type: :vod,
           target_segment_duration: opts[:target_segment_duration]
         }
 
@@ -417,12 +415,15 @@ defmodule HLS.Packager do
               %{
                 playlist
                 | segments: playlist.segments ++ track.pending_playlist.segments,
-                  finished: true
+                  finished: true,
+                  type: :vod
               }
             end)
             |> Map.update!(:pending_playlist, fn playlist ->
-              %{playlist | segments: [], finished: true}
+              %{playlist | segments: [], finished: true, type: :vod}
             end)
+
+          # TODO: Delete pending playlist instead of updating it
 
           :ok = write_playlist(packager, track.media_playlist)
           :ok = write_playlist(packager, track.pending_playlist)
@@ -635,7 +636,7 @@ defmodule HLS.Packager do
                   message: "Cannot resume a finished media playlist: #{to_string(stream.uri)}"
 
               resume_finished_tracks ->
-                %{media | finished: false}
+                %{media | finished: false, type: nil}
 
               true ->
                 media
@@ -654,6 +655,7 @@ defmodule HLS.Packager do
             data
             |> HLS.Playlist.unmarshal(%HLS.Playlist.Media{uri: pending_uri})
             |> Map.replace!(:finished, false)
+            |> Map.replace!(:type, nil)
 
           {:error, _error} ->
             %HLS.Playlist.Media{
