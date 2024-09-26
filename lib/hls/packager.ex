@@ -423,10 +423,8 @@ defmodule HLS.Packager do
               %{playlist | segments: [], finished: true, type: :vod}
             end)
 
-          # TODO: Delete pending playlist instead of updating it
-
           :ok = write_playlist(packager, track.media_playlist)
-          :ok = write_playlist(packager, track.pending_playlist)
+          :ok = delete_playlist(packager, track.pending_playlist)
 
           {id, track}
         end,
@@ -712,6 +710,13 @@ defmodule HLS.Packager do
       packager.storage,
       HLS.Playlist.build_absolute_uri(packager.manifest_uri, playlist.uri),
       HLS.Playlist.marshal(playlist)
+    )
+  end
+
+  defp delete_playlist(packager, playlist) do
+    Storage.delete(
+      packager.storage,
+      HLS.Playlist.build_absolute_uri(packager.manifest_uri, playlist.uri)
     )
   end
 
