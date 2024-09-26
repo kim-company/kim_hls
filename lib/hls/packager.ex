@@ -21,7 +21,7 @@ defmodule HLS.Packager do
 
   ### Managing tracks
 
-  You can insert a new track using the add_track/3 function, which allows adding variant streams
+  You can insert a new track using the `add_track/3` function, which allows adding variant streams
   or alternative renditions to the packager. Tracks can only be inserted before the master playlist has been written.
 
   Example:
@@ -125,6 +125,7 @@ defmodule HLS.Packager do
             media_playlist: HLS.Playlist.Media.t(),
             pending_playlist: HLS.Playlist.Media.t(),
             discontinue_next_segment: boolean(),
+            codecs: [String.t()],
             upload_tasks: [%{ref: reference(), segment: HLS.Segment.t(), uploaded: boolean()}]
           }
 
@@ -135,12 +136,14 @@ defmodule HLS.Packager do
       :segment_count,
       :segment_extension,
       :media_playlist,
-      :pending_playlist,
-      :discontinue_next_segment,
-      :upload_tasks
+      :pending_playlist
     ]
 
-    defstruct @enforce_keys
+    defstruct [
+                discontinue_next_segment: false,
+                upload_tasks: [],
+                codecs: []
+              ] ++ @enforce_keys
   end
 
   @doc """
@@ -213,7 +216,14 @@ defmodule HLS.Packager do
   Tracks can only be added as long as the master playlist has not been written yet.
   """
   def add_track(packager, track_id, opts) do
-    opts = Keyword.validate!(opts, [:stream, :segment_extension, :target_segment_duration])
+    opts =
+      Keyword.validate!(opts, [
+        :stream,
+        :segment_extension,
+        :target_segment_duration,
+        codecs: []
+      ])
+
     stream = opts[:stream]
 
     cond do
@@ -228,6 +238,8 @@ defmodule HLS.Packager do
       true ->
         media_playlist = %HLS.Playlist.Media{
           uri: stream.uri,
+          # NOTE: We do not support :live playlists yet.
+          type: :vod,
           target_segment_duration: opts[:target_segment_duration]
         }
 
@@ -239,8 +251,7 @@ defmodule HLS.Packager do
           media_playlist: media_playlist,
           segment_extension: opts[:segment_extension],
           pending_playlist: %{media_playlist | uri: to_pending_uri(stream.uri)},
-          discontinue_next_segment: false,
-          upload_tasks: []
+          codecs: opts[:codecs]
         }
 
         put_in(packager, [Access.key!(:tracks), track_id], track)
@@ -432,17 +443,38 @@ defmodule HLS.Packager do
   Builds the master playlist of the given packager.
   """
   def build_master(packager) do
-    streams =
+    alternative_tracks =
       packager.tracks
       |> Map.values()
-      |> Enum.map(& &1.stream)
+      |> Enum.filter(&is_struct(&1.stream, HLS.AlternativeRendition))
+
+    variant_tracks =
+      packager.tracks
+      |> Map.values()
+      |> Enum.filter(&is_struct(&1.stream, HLS.VariantStream))
+      |> Enum.map(fn track ->
+        group_ids = HLS.VariantStream.associated_group_ids(track.stream)
+
+        alternative_codecs =
+          alternative_tracks
+          |> Enum.filter(fn track -> Enum.member?(group_ids, track.stream.group_id) end)
+          |> Enum.flat_map(& &1.codecs)
+          |> MapSet.new()
+
+        update_in(track, [Access.key!(:stream), Access.key!(:codecs)], fn prev_codecs ->
+          prev_codecs
+          |> MapSet.new()
+          |> MapSet.union(alternative_codecs)
+          |> Enum.to_list()
+        end)
+      end)
 
     %HLS.Playlist.Master{
       version: 4,
       uri: packager.manifest_uri,
       independent_segments: true,
-      streams: Enum.filter(streams, &is_struct(&1, HLS.VariantStream)),
-      alternative_renditions: Enum.filter(streams, &is_struct(&1, HLS.AlternativeRendition))
+      streams: Enum.map(variant_tracks, & &1.stream),
+      alternative_renditions: Enum.map(alternative_tracks, & &1.stream)
     }
   end
 
@@ -664,9 +696,7 @@ defmodule HLS.Packager do
         init_section: init_section,
         duration: HLS.Playlist.Media.compute_playlist_duration(media_playlist),
         media_playlist: media_playlist,
-        pending_playlist: pending_playlist,
-        discontinue_next_segment: false,
-        upload_tasks: []
+        pending_playlist: pending_playlist
       }
 
       Map.put(acc, track_id, track)

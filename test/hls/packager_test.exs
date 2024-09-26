@@ -203,6 +203,46 @@ defmodule HLS.PackagerTest do
       assert length(master.streams) == 3
       assert length(master.alternative_renditions) == 1
     end
+
+    test "merges codecs from alternative renditions in the same group" do
+      packager = new_packager()
+
+      packager =
+        packager
+        |> Packager.add_track(
+          "video_480p",
+          stream: %HLS.VariantStream{
+            uri: Packager.new_variant_uri(packager, "video_480p"),
+            bandwidth: 14_000_000,
+            resolution: {1920, 1080},
+            codecs: ["video"],
+            audio: "AUDIO"
+          },
+          segment_extension: ".m4s",
+          target_segment_duration: 7
+        )
+        |> Packager.add_track(
+          "audio",
+          stream: %HLS.AlternativeRendition{
+            uri: Packager.new_variant_uri(packager, "audio"),
+            group_id: "AUDIO",
+            type: :audio,
+            name: "Audio"
+          },
+          segment_extension: ".m4s",
+          target_segment_duration: 7,
+          codecs: ["audio"]
+        )
+
+      master = Packager.build_master(packager)
+      expected = MapSet.new(["video", "audio"])
+
+      assert master.streams
+             |> hd()
+             |> Map.fetch!(:codecs)
+             |> MapSet.new()
+             |> MapSet.equal?(expected)
+    end
   end
 
   defp with_track(packager, track_id) do
