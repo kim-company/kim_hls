@@ -403,8 +403,8 @@ defmodule HLS.Packager do
   """
   def flush(packager) do
     tracks =
-      packager.tracks
-      |> Task.async_stream(
+      Map.new(
+        packager.tracks,
         fn {id, track} ->
           pending_duration = HLS.Playlist.Media.compute_playlist_duration(track.pending_playlist)
 
@@ -427,11 +427,8 @@ defmodule HLS.Packager do
           :ok = delete_playlist(packager, track.pending_playlist)
 
           {id, track}
-        end,
-        timeout: :infinity,
-        ordered: false
+        end
       )
-      |> Map.new(fn {:ok, {id, track}} -> {id, track} end)
 
     packager
     |> Map.replace!(:tracks, tracks)

@@ -186,7 +186,7 @@ defmodule HLS.PackagerTest do
       Packager.flush(packager)
 
       uri = URI.new!("file://x/stream_video_480p_pending.m3u8")
-      assert_received {:put, ^uri, _playlist}
+      assert_received {:delete, ^uri}
       uri = URI.new!("file://x/stream_video_480p.m3u8")
       assert_received {:put, ^uri, _playlist}
     end
