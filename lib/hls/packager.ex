@@ -42,7 +42,7 @@ defmodule HLS.Packager do
 
   ### Adding the init section
 
-  The put_init_section/3 function adds or updates the initialization section (such as an MPEG-4 ‘init’ section)
+  The `put_init_section/3` function adds or updates the initialization section (such as an MPEG-4 ‘init’ section)
   for a stream. This section will be used for all upcoming segments and is essential for media formats like fragmented
   MP4 where an initial header is required before media segments can be played.
 
@@ -56,11 +56,35 @@ defmodule HLS.Packager do
 
   ### Adding Segments
 
-  The put_segment/4 function allows adding a new segment to a track. It will update the playlist with the new segment and write it to storage.
+  The `put_segment/4` function allows adding a new segment to a track. It will update the playlist with the new segment and write it to storage.
 
   Example:
   ```elixir
   HLS.Packager.put_segment(packager, track_id, segment_data, 10.0)
+  ```
+
+  ### Adding Segments Asynchronously
+
+  The `put_segment_async/4` function allows you to add a new segment to a track asynchronously. This function returns a reference to the segment upload task along with a function to perform the upload. After invoking the upload function, you must call the `ack_segment/3` function to acknowledge the segment upload and update the playlist.
+
+  This method is useful when dealing with concurrent uploads of segments while keeping the playlist updates consistent.
+
+  Example:
+  ```elixir
+  {packager, {ref, upload_fun}} = HLS.Packager.put_segment_async(packager, track_id, segment_data, 10.0)
+  :ok = upload_fun.()
+  HLS.Packager.ack_segment(packager, track_id, ref)
+  ```
+
+  ### Discontinuing Tracks
+
+  The `discontinue_track/2` function forces the next segment to be added to the track with an EXT-X-DISCONTINUITY tag. This tag is used in HLS playlists to indicate that there is a discontinuity in the media timeline, such as a change in codec, resolution, or other major differences between segments.
+
+  This is useful for signaling transitions between different media formats or changes in the stream, making sure that the HLS client can handle the change smoothly.
+
+  Example:
+  ```elixir
+  packager = HLS.Packager.discontinue_track(packager, track_id)
   ```
 
   ### Synchronization and Flushing
@@ -101,7 +125,7 @@ defmodule HLS.Packager do
             media_playlist: HLS.Playlist.Media.t(),
             pending_playlist: HLS.Playlist.Media.t(),
             discontinue_next_segment: boolean(),
-            upload_tasks: [%{task_ref: Task.ref(), segment: HLS.Segment.t(), uploaded: boolean()}]
+            upload_tasks: [%{ref: reference(), segment: HLS.Segment.t(), uploaded: boolean()}]
           }
 
     @enforce_keys [
@@ -162,10 +186,10 @@ defmodule HLS.Packager do
   Will force that the next added segment has an `EXT-X-DISCONTINUITY` tag.
   """
   def discontinue_track(packager, track_id) do
-    put_in(
+    update_track(
       packager,
-      [Access.key!(:tracks), track_id, Access.key!(:discontinue_next_segment)],
-      true
+      track_id,
+      fn track -> %{track | discontinue_next_segment: true} end
     )
   end
 
@@ -270,8 +294,8 @@ defmodule HLS.Packager do
     stream_uri = track.media_playlist.uri
     next_index = track.segment_count + 1
     segment_uri = relative_segment_uri(stream_uri, track.segment_extension, next_index)
-
     init_section = if track.init_section, do: %{uri: track.init_section[:uri]}
+    ref = make_ref()
 
     segment =
       %HLS.Segment{
@@ -281,15 +305,14 @@ defmodule HLS.Packager do
         discontinuity: track.discontinue_next_segment
       }
 
-    {:ok, task} =
-      Task.async(fn ->
-        :ok =
-          Storage.put(
-            packager.storage,
-            HLS.Playlist.Media.build_segment_uri(packager.manifest_uri, segment.uri),
-            payload
-          )
-      end)
+    upload_fun = fn ->
+      :ok =
+        Storage.put(
+          packager.storage,
+          HLS.Playlist.Media.build_segment_uri(packager.manifest_uri, segment.uri),
+          payload
+        )
+    end
 
     packager =
       update_track(packager, track_id, fn track ->
@@ -297,21 +320,21 @@ defmodule HLS.Packager do
         |> Map.update!(:segment_count, &(&1 + 1))
         |> Map.replace!(:discontinue_next_segment, false)
         |> Map.update!(:upload_tasks, fn tasks ->
-          tasks ++ [%{task_ref: task.ref, segment: segment, uploaded: false}]
+          tasks ++ [%{ref: ref, segment: segment, uploaded: false}]
         end)
       end)
 
-    {packager, task}
+    {packager, {ref, upload_fun}}
   end
 
   @doc """
   Confirms a successful segment upload.
   """
-  def ack_segment(packager, track_id, task_ref) do
+  def ack_segment(packager, track_id, ref) do
     update_track(packager, track_id, fn track ->
       upload_tasks =
         Enum.map(track.upload_tasks, fn upload_task ->
-          if upload_task.task_ref == task_ref do
+          if upload_task.ref == ref do
             %{upload_task | uploaded: true}
           else
             upload_task
@@ -333,64 +356,12 @@ defmodule HLS.Packager do
   end
 
   @doc """
-  Marks a segment upload as failed.
-  """
-  def nack_segment(_packager, _track_id, _task_ref) do
-    # TODO: Explode with more information
-    raise "Segment failed"
-  end
-
-  @doc """
   Adds a new segment into the playlist.
   """
   def put_segment(packager, track_id, payload, duration) do
-    track = Map.fetch!(packager.tracks, track_id)
-    stream_uri = track.media_playlist.uri
-    next_index = track.segment_count + 1
-    segment_uri = relative_segment_uri(stream_uri, track.segment_extension, next_index)
-
-    init_section = if track.init_section, do: %{uri: track.init_section[:uri]}
-
-    # Create a new segment
-    segment =
-      %HLS.Segment{
-        uri: segment_uri,
-        duration: duration,
-        init_section: init_section,
-        discontinuity: track.discontinue_next_segment
-      }
-
-    # Upload the segment
-    # TODO: Create an async API for it.
-    :ok =
-      Storage.put(
-        packager.storage,
-        HLS.Playlist.Media.build_segment_uri(packager.manifest_uri, segment.uri),
-        payload
-      )
-
-    # Add segment to the pending playlist and increment the segment count.
-    packager =
-      packager
-      |> update_in(
-        [Access.key!(:tracks), track_id, Access.key!(:pending_playlist)],
-        fn playlist -> Map.update!(playlist, :segments, &(&1 ++ [segment])) end
-      )
-      |> update_in(
-        [Access.key!(:tracks), track_id, Access.key!(:segment_count)],
-        &(&1 + 1)
-      )
-      |> put_in(
-        [Access.key!(:tracks), track_id, Access.key!(:discontinue_next_segment)],
-        false
-      )
-
-    pending_playlist =
-      get_in(packager, [Access.key!(:tracks), track_id, Access.key!(:pending_playlist)])
-
-    :ok = write_playlist(packager, pending_playlist)
-
-    packager
+    {packager, {ref, upload_fun}} = put_segment_async(packager, track_id, payload, duration)
+    :ok = upload_fun.()
+    ack_segment(packager, track_id, ref)
   end
 
   @doc """
@@ -694,7 +665,8 @@ defmodule HLS.Packager do
         duration: HLS.Playlist.Media.compute_playlist_duration(media_playlist),
         media_playlist: media_playlist,
         pending_playlist: pending_playlist,
-        discontinue_next_segment: false
+        discontinue_next_segment: false,
+        upload_tasks: []
       }
 
       Map.put(acc, track_id, track)
@@ -728,6 +700,6 @@ defmodule HLS.Packager do
   end
 
   defp update_track(packager, track_id, callback) do
-    update_in(packager, [Access.key!(:tracks), track_id], calback)
+    update_in(packager, [Access.key!(:tracks), track_id], callback)
   end
 end
