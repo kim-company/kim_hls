@@ -124,6 +124,8 @@ defmodule HLS.Playlist.Tag do
     |> then(&Enum.join(["#", &1]))
   end
 
+  def marshal(tag), do: marshal_id(tag.id)
+
   def marshal(tag, value) do
     marshal_id(tag.id) <> ":" <> to_string(value)
   end
