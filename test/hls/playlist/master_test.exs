@@ -111,7 +111,7 @@ defmodule HLS.Playlist.MasterTest do
       master = Playlist.unmarshal(raw, %Playlist.Master{})
 
       assert_raise(Playlist.Master.NotFoundError, fn ->
-        Playlist.Master.update_alternative_rendition(master, "A", fn alt -> alt end)
+        Playlist.Master.update_alternative_rendition(master, "A", :video, fn alt -> alt end)
       end)
     end
 
@@ -136,7 +136,7 @@ defmodule HLS.Playlist.MasterTest do
 
       raw
       |> Playlist.unmarshal(%Playlist.Master{})
-      |> Playlist.Master.update_alternative_rendition("Audio Track", fn alt ->
+      |> Playlist.Master.update_alternative_rendition("Audio Track", :audio, fn alt ->
         alt
       end)
     end
@@ -159,7 +159,9 @@ defmodule HLS.Playlist.MasterTest do
       master = Playlist.unmarshal(raw, %Playlist.Master{})
 
       assert_raise(Playlist.Master.DuplicateError, fn ->
-        Playlist.Master.update_alternative_rendition(master, "A", fn alt -> %{alt | name: "B"} end)
+        Playlist.Master.update_alternative_rendition(master, "A", :audio, fn alt ->
+          %{alt | name: "B"}
+        end)
       end)
     end
 
@@ -186,7 +188,7 @@ defmodule HLS.Playlist.MasterTest do
           name: "Sub",
           type: :subtitles
         })
-        |> Playlist.Master.update_alternative_rendition("Sub", fn _old ->
+        |> Playlist.Master.update_alternative_rendition("Sub", :subtitles, fn _old ->
           new_alt
         end)
 
@@ -219,7 +221,7 @@ defmodule HLS.Playlist.MasterTest do
       master =
         raw
         |> Playlist.unmarshal(%Playlist.Master{})
-        |> Playlist.Master.update_alternative_rendition("Ciaoone", fn alt ->
+        |> Playlist.Master.update_alternative_rendition("Ciaoone", :audio, fn alt ->
           %HLS.AlternativeRendition{alt | name: "A"}
         end)
 
