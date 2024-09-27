@@ -458,8 +458,8 @@ defmodule HLS.Packager do
 
         update_in(track, [Access.key!(:stream), Access.key!(:codecs)], fn prev_codecs ->
           prev_codecs
-          |> Enum.concat(alternative_codecs)
           |> Enum.concat(track.codecs)
+          |> Enum.concat(alternative_codecs)
           |> Enum.uniq()
         end)
       end)
