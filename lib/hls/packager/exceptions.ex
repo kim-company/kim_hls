@@ -13,3 +13,7 @@ end
 defmodule HLS.Packager.AddTrackError do
   defexception [:message]
 end
+
+defmodule HLS.Packager.TrackNotFoundError do
+  defexception [:message]
+end

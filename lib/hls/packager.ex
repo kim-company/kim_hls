@@ -211,6 +211,30 @@ defmodule HLS.Packager do
   end
 
   @doc """
+  Returns the maximum track duration.
+  """
+  def max_track_duration(packager) do
+    packager.tracks
+    |> Enum.map(fn track ->
+      track.duration + HLS.Playlist.Media.compute_playlist_duration(track.pending_playlist)
+    end)
+    |> Enum.max(&>=/2, fn -> 0 end)
+  end
+
+  @doc """
+  Returns the duration of the given track.
+  """
+  def track_duration(packager, track_id) do
+    case get_track(packager, track_id) do
+      nil ->
+        raise HLS.Packager.TrackNotFoundError, "Track with id track_id does not exist."
+
+      track ->
+        track.duration + HLS.Playlist.Media.compute_playlist_duration(track.pending_playlist)
+    end
+  end
+
+  @doc """
   Adds a new track to the packager.
 
   Tracks can only be added as long as the master playlist has not been written yet.
@@ -350,7 +374,7 @@ defmodule HLS.Packager do
           end
         end)
 
-      {finished, unfinished} = Enum.split_with(upload_tasks, & &1.uploaded)
+      {finished, unfinished} = Enum.split_while(upload_tasks, & &1.uploaded)
       finished_segments = Enum.map(finished, & &1.segment)
 
       pending_playlist = %{
