@@ -215,7 +215,7 @@ defmodule HLS.Packager do
   """
   def max_track_duration(packager) do
     packager.tracks
-    |> Enum.map(fn track ->
+    |> Enum.map(fn {_track_id, track} ->
       track.duration + HLS.Playlist.Media.compute_playlist_duration(track.pending_playlist)
     end)
     |> Enum.max(&>=/2, fn -> 0 end)
