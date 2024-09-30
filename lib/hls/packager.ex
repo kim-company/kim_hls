@@ -631,7 +631,7 @@ defmodule HLS.Packager do
         [segment | moved_segs]
       )
     else
-      {Enum.reverse(moved_segs), Enum.reverse([segment | rest]), acc_duration}
+      {Enum.reverse(moved_segs), [segment | rest], acc_duration}
     end
   end
 
