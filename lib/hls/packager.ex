@@ -585,19 +585,10 @@ defmodule HLS.Packager do
 
   defp move_segments_until_sync_point(packager, track, sync_point) do
     {moved_segments, remaining_segments, new_duration} =
-      Enum.reduce_while(
+      split_segments_at_sync_point(
         track.pending_playlist.segments,
-        {[], [], track.duration},
-        fn segment, {moved, remaining, duration} ->
-          new_duration = duration + segment.duration
-
-          # TODO: Check if this is the behaviour we want to have.
-          if new_duration <= sync_point do
-            {:cont, {moved ++ [segment], remaining, new_duration}}
-          else
-            {:halt, {moved, [segment | remaining], duration}}
-          end
-        end
+        sync_point,
+        track.duration
       )
 
     track =
@@ -616,6 +607,32 @@ defmodule HLS.Packager do
     end
 
     track
+  end
+
+  defp split_segments_at_sync_point(
+         pending_segments,
+         sync_point,
+         acc_duration,
+         moved_segs \\ []
+       )
+
+  defp split_segments_at_sync_point([], _sync_point, acc_duration, moved_segs) do
+    {Enum.reverse(moved_segs), [], acc_duration}
+  end
+
+  defp split_segments_at_sync_point([segment | rest], sync_point, acc_duration, moved_segs) do
+    new_duration = acc_duration + segment.duration
+
+    if new_duration <= sync_point do
+      split_segments_at_sync_point(
+        rest,
+        sync_point,
+        new_duration,
+        [segment | moved_segs]
+      )
+    else
+      {Enum.reverse(moved_segs), Enum.reverse([segment | rest]), acc_duration}
+    end
   end
 
   defp maybe_write_master(packager, opts \\ []) do
