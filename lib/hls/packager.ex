@@ -591,7 +591,7 @@ defmodule HLS.Packager do
             track.segment_count - length(track.pending_playlist.segments) -
               length(track.upload_tasks)
 
-          "#{id}: #{media_playlist_segments}/#{track.segment_count} segment published (#{track.duration}s)"
+          "#{id}: #{media_playlist_segments}/#{track.segment_count} segment published (#{Float.round(track.duration, 2)}s)"
         end)
 
       """
@@ -675,7 +675,7 @@ defmodule HLS.Packager do
         Logger.debug(fn ->
           track_info =
             Enum.map(packager.tracks, fn {id, track} ->
-              "#{id}: #{track.duration}s (expected: #{track.media_playlist.target_segment_duration * 3}s)"
+              "#{id}: #{Float.round(track.duration, 2)}s (expected: #{track.media_playlist.target_segment_duration * 3}s)"
             end)
 
           """
