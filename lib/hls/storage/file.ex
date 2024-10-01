@@ -6,9 +6,14 @@ defmodule HLS.Storage.File do
   defimpl HLS.Storage do
     def get(_storage, uri) do
       case File.read(to_path(uri)) do
-        {:ok, binary} -> {:ok, binary}
-        {:error, :enoent} -> {:error, :not_found}
-        {:error, code} -> raise "TODO custom exception #{inspect(code)}"
+        {:ok, binary} ->
+          {:ok, binary}
+
+        {:error, :enoent} ->
+          {:error, :not_found}
+
+        {:error, code} ->
+          raise "#{__MODULE__}.get/2 of uri #{to_string(uri)} failed with #{inspect(code)}."
       end
     end
 
