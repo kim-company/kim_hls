@@ -410,7 +410,10 @@ defmodule HLS.Packager do
       |> Enum.map(fn {_id, track} -> track.duration end)
       |> Enum.max()
 
-    ceil(max_duration / target_duration) * target_duration
+    max(
+      ceil(max_duration / target_duration) * target_duration,
+      target_duration
+    )
   end
 
   @doc """
