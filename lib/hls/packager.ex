@@ -161,7 +161,14 @@ defmodule HLS.Packager do
       ...> )
   """
   def new(opts) do
-    opts = Keyword.validate!(opts, [:storage, :manifest_uri, resume_finished_tracks: false])
+    opts =
+      Keyword.validate!(opts, [
+        :storage,
+        :manifest_uri,
+        resume_finished_tracks: false,
+        restore_pending_segments: true
+      ])
+
     manifest_uri = opts[:manifest_uri]
     storage = opts[:storage]
 
@@ -169,11 +176,13 @@ defmodule HLS.Packager do
       {:ok, data} ->
         master = HLS.Playlist.unmarshal(data, %HLS.Playlist.Master{uri: opts[:manifest_uri]})
 
+        load_track_opts = Keyword.take(opts, [:resume_finished_tracks, :restore_pending_segments])
+
         %__MODULE__{
           master_written?: true,
           storage: storage,
           manifest_uri: manifest_uri,
-          tracks: load_tracks(storage, master, opts[:resume_finished_tracks])
+          tracks: load_tracks(storage, master, load_track_opts)
         }
 
       {:error, :not_found} ->
@@ -689,7 +698,9 @@ defmodule HLS.Packager do
     end
   end
 
-  defp load_tracks(storage, master, resume_finished_tracks) do
+  defp load_tracks(storage, master, opts) do
+    resume_finished_tracks = Keyword.fetch!(opts, :resume_finished_tracks)
+    restore_pending_segments = Keyword.fetch!(opts, :restore_pending_segments)
     all_streams = Enum.concat(master.streams, master.alternative_renditions)
 
     Enum.reduce(all_streams, %{}, fn stream, acc ->
@@ -718,14 +729,15 @@ defmodule HLS.Packager do
       pending_uri = to_pending_uri(stream.uri)
 
       pending_playlist =
-        case Storage.get(storage, HLS.Playlist.build_absolute_uri(master.uri, pending_uri)) do
-          {:ok, data} ->
-            data
-            |> HLS.Playlist.unmarshal(%HLS.Playlist.Media{uri: pending_uri})
-            |> Map.replace!(:finished, false)
-            |> Map.replace!(:type, nil)
-
-          {:error, _error} ->
+        with {:restore_pending, true} <- {:restore_pending, restore_pending_segments},
+             {:ok, data} <-
+               Storage.get(storage, HLS.Playlist.build_absolute_uri(master.uri, pending_uri)) do
+          data
+          |> HLS.Playlist.unmarshal(%HLS.Playlist.Media{uri: pending_uri})
+          |> Map.replace!(:finished, false)
+          |> Map.replace!(:type, nil)
+        else
+          _error ->
             %HLS.Playlist.Media{
               uri: pending_uri,
               target_segment_duration: media_playlist.target_segment_duration,
