@@ -157,7 +157,8 @@ defmodule HLS.Packager do
       iex> HLS.Packager.new(
       ...>   storage: HLS.Storage.File.new(),
       ...>   manifest_uri: URI.new!("file://stream.m3u8"),
-      ...>   resume_finished_tracks: false
+      ...>   resume_finished_tracks: false,
+      ...>   restore_pending_segments: true
       ...> )
   """
   def new(opts) do
@@ -466,6 +467,18 @@ defmodule HLS.Packager do
           {id, track}
         end
       )
+
+    Logger.debug(fn ->
+      track_info =
+        Enum.map(tracks, fn {id, track} ->
+          "#{id}: segments: #{track.segment_count}, duration: #{Float.round(track.duration, 2)}s"
+        end)
+
+      """
+      #{__MODULE__}.flush/1 flushed all playlists and set them to vod:
+        - #{Enum.join(track_info, "\n  - ")}
+      """
+    end)
 
     packager
     |> Map.replace!(:tracks, tracks)
