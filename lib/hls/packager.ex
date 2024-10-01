@@ -100,6 +100,7 @@ defmodule HLS.Packager do
   """
 
   alias HLS.Storage
+  require Logger
 
   @type t() :: %__MODULE__{
           master_written?: boolean(),
@@ -580,6 +581,18 @@ defmodule HLS.Packager do
         {id, track}
       end)
 
+    Logger.debug(fn ->
+      track_info =
+        Enum.map(tracks, fn {id, track} ->
+          "#{id}: #{track.segment_count - length(track.pending_playlist.segments) - length(track.upload_tasks)}/#{track.segment_count} segment published (#{track.duration / 1000}s)"
+        end)
+
+      """
+      #{__MODULE__}.sync/2 synchronized tracks:
+        - #{Enum.join(track_info, "\n  - ")}
+      """
+    end)
+
     %{packager | tracks: tracks}
   end
 
@@ -649,8 +662,21 @@ defmodule HLS.Packager do
       if opts[:force] or all_playlists_ready? do
         master_playlist = build_master(packager)
         :ok = write_playlist(packager, master_playlist)
+        Logger.debug(fn -> "#{__MODULE__}.maybe_write_master/2 master playlist written." end)
         %{packager | master_written?: true}
       else
+        Logger.debug(fn ->
+          track_info =
+            Enum.map(packager.tracks, fn {id, track} ->
+              "#{id}: #{track.duration / 1000}s} (expected: #{track.media_playlist.target_segment_duration * 3 / 1000}s)"
+            end)
+
+          """
+          #{__MODULE__}.maybe_write_master/2 not all tracks are ready yet.
+            - #{Enum.join(track_info, "\n  - ")}
+          """
+        end)
+
         packager
       end
     end
