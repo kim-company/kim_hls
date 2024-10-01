@@ -105,11 +105,11 @@ defmodule HLS.PackagerTest do
 
       packager
       |> Packager.put_init_section(track_id, <<1>>)
-      |> Packager.put_segment(track_id, <<1>>, 10_000)
+      |> Packager.put_segment(track_id, <<1>>, 10.0)
       |> Packager.put_init_section(track_id, <<1>>)
-      |> Packager.put_segment(track_id, <<1>>, 10_000)
+      |> Packager.put_segment(track_id, <<1>>, 10.0)
       |> Packager.put_init_section(track_id, <<2>>)
-      |> Packager.put_segment(track_id, <<1>>, 10_000)
+      |> Packager.put_segment(track_id, <<1>>, 10.0)
 
       uri = URI.new!("file://x/stream_video_480p/00000/stream_video_480p_00001_init.mp4")
       assert_received {:put, ^uri, <<1>>}
@@ -130,7 +130,7 @@ defmodule HLS.PackagerTest do
         new_packager()
         |> with_track(track_id)
 
-      Packager.put_segment(packager, track_id, <<1>>, 10_000)
+      Packager.put_segment(packager, track_id, <<1>>, 10.0)
 
       uri = URI.new!("file://x/stream_video_480p/00000/stream_video_480p_00001.m4s")
       assert_received {:put, ^uri, <<1>>}
@@ -148,7 +148,7 @@ defmodule HLS.PackagerTest do
         new_packager()
         |> with_track(track_id)
 
-      packager = Packager.put_segment(packager, track_id, <<1>>, 10_000)
+      packager = Packager.put_segment(packager, track_id, <<1>>, 10.0)
 
       uri = URI.new!("file://x/stream_video_480p/00000/stream_video_480p_00001.m4s")
       assert_received {:put, ^uri, <<1>>}
@@ -174,7 +174,7 @@ defmodule HLS.PackagerTest do
         new_packager()
         |> with_track(track_id)
 
-      packager = Packager.put_segment(packager, track_id, <<1>>, 10_000)
+      packager = Packager.put_segment(packager, track_id, <<1>>, 10.0)
 
       uri = URI.new!("file://x/stream_video_480p/00000/stream_video_480p_00001.m4s")
       assert_received {:put, ^uri, <<1>>}
