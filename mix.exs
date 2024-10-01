@@ -21,7 +21,7 @@ defmodule HLS.MixProject do
 
   # Run "mix help deps" to learn about dependencies.
   defp deps do
-    []
+    [{:req_s3, "~> 0.2.3", optional: true}]
   end
 
   defp elixirc_paths(:test), do: ["lib", "test/support"]
