@@ -584,7 +584,11 @@ defmodule HLS.Packager do
     Logger.debug(fn ->
       track_info =
         Enum.map(tracks, fn {id, track} ->
-          "#{id}: #{track.segment_count - length(track.pending_playlist.segments) - length(track.upload_tasks)}/#{track.segment_count} segment published (#{track.duration / 1000}s)"
+          media_playlist_segments =
+            track.segment_count - length(track.pending_playlist.segments) -
+              length(track.upload_tasks)
+
+          "#{id}: #{media_playlist_segments}/#{track.segment_count} segment published (#{track.duration / 1000}s)"
         end)
 
       """
