@@ -432,7 +432,7 @@ defmodule HLS.Packager do
   def sync(packager, sync_point) do
     packager
     |> sync_playlists(sync_point)
-    |> maybe_write_master()
+    |> maybe_write_master(sync_point: sync_point)
   end
 
   @doc """
@@ -677,37 +677,51 @@ defmodule HLS.Packager do
     end
   end
 
-  defp maybe_write_master(packager, opts \\ []) do
-    opts = Keyword.validate!(opts, force: false)
+  defp maybe_write_master(packager, _opts) when packager.master_written? do
+    packager
+  end
 
-    if packager.master_written? do
-      packager
-    else
-      all_playlists_ready? =
-        Enum.all?(packager.tracks, fn {_uri, track} ->
-          track.duration >= track.media_playlist.target_segment_duration * 3
-        end)
+  defp maybe_write_master(packager, opts) do
+    opts = Keyword.validate!(opts, force: false, sync_point: nil)
 
-      if opts[:force] or all_playlists_ready? do
-        master_playlist = build_master(packager)
-        :ok = write_playlist(packager, master_playlist)
-        Logger.debug(fn -> "#{__MODULE__}.maybe_write_master/2 master playlist written." end)
-        %{packager | master_written?: true}
+    sync_point_reached? =
+      if opts[:sync_point] do
+        max_target_duration =
+          packager.tracks
+          |> Enum.map(fn {_id, track} ->
+            track.media_playlist.target_segment_duration
+          end)
+          |> Enum.max()
+
+        opts[:sync_point] >= max_target_duration * 3
       else
-        Logger.debug(fn ->
-          track_info =
-            Enum.map(packager.tracks, fn {id, track} ->
-              "#{id}: #{Float.round(track.duration, 2)}s (expected: #{track.media_playlist.target_segment_duration * 3}s)"
-            end)
-
-          """
-          #{__MODULE__}.maybe_write_master/2 not all tracks are ready yet.
-            - #{Enum.join(track_info, "\n  - ")}
-          """
-        end)
-
-        packager
+        false
       end
+
+    all_playlists_ready? =
+      Enum.all?(packager.tracks, fn {_id, track} ->
+        track.duration >= track.media_playlist.target_segment_duration * 3
+      end)
+
+    if opts[:force] or all_playlists_ready? or sync_point_reached? do
+      master_playlist = build_master(packager)
+      :ok = write_playlist(packager, master_playlist)
+      Logger.debug(fn -> "#{__MODULE__}.maybe_write_master/2 master playlist written." end)
+      %{packager | master_written?: true}
+    else
+      Logger.debug(fn ->
+        track_info =
+          Enum.map(packager.tracks, fn {id, track} ->
+            "#{id}: #{Float.round(track.duration, 2)}s (expected: #{track.media_playlist.target_segment_duration * 3}s)"
+          end)
+
+        """
+        #{__MODULE__}.maybe_write_master/2 not all tracks are ready yet and the sync point was not reached.
+          - #{Enum.join(track_info, "\n  - ")}
+        """
+      end)
+
+      packager
     end
   end
 
