@@ -273,7 +273,8 @@ defmodule HLS.Packager do
       true ->
         media_playlist = %HLS.Playlist.Media{
           uri: stream.uri,
-          target_segment_duration: opts[:target_segment_duration]
+          target_segment_duration: opts[:target_segment_duration],
+          type: :event
         }
 
         track = %Track{
@@ -742,7 +743,9 @@ defmodule HLS.Packager do
                   message: "Cannot resume a finished media playlist: #{to_string(stream.uri)}"
 
               resume_finished_tracks ->
-                %{media | finished: false, type: nil}
+                media
+                |> Map.replace!(:finished, false)
+                |> Map.replace!(:type, :event)
 
               true ->
                 media
@@ -762,11 +765,12 @@ defmodule HLS.Packager do
           data
           |> HLS.Playlist.unmarshal(%HLS.Playlist.Media{uri: pending_uri})
           |> Map.replace!(:finished, false)
-          |> Map.replace!(:type, nil)
+          |> Map.replace!(:type, :event)
         else
           _error ->
             %HLS.Playlist.Media{
               uri: pending_uri,
+              type: :event,
               target_segment_duration: media_playlist.target_segment_duration,
               version: media_playlist.version
             }
