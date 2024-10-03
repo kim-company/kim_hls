@@ -24,7 +24,7 @@ if Code.ensure_loaded?(ReqS3) do
     defp retry_delay(n) do
       delay =
         (Integer.pow(2, n) * 750)
-        |> max(6000)
+        |> min(6000)
 
       jitter = 1 - 0.1 * :rand.uniform()
 
