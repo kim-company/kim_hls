@@ -12,7 +12,6 @@ if Code.ensure_loaded?(ReqS3) do
 
       req =
         Req.new(
-          compress_body: true,
           retry: :transient,
           retry_delay: &retry_delay/1
         )
