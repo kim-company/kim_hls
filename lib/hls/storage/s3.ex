@@ -10,12 +10,35 @@ if Code.ensure_loaded?(ReqS3) do
           :region
         ])
 
-      %__MODULE__{req: ReqS3.attach(Req.new(), aws_sigv4: opts)}
+      req =
+        Req.new(
+          compress_body: true,
+          retry: :transient,
+          retry_delay: &retry_delay/1
+        )
+        |> ReqS3.attach(aws_sigv4: opts)
+
+      %__MODULE__{req: req}
+    end
+
+    defp retry_delay(n) do
+      delay =
+        (Integer.pow(2, n) * 750)
+        |> max(6000)
+
+      jitter = 1 - 0.1 * :rand.uniform()
+
+      trunc(delay * jitter)
     end
 
     defimpl HLS.Storage do
-      def get(storage, uri) do
-        case Req.get(storage.req, url: uri) do
+      def get(storage, uri, opts) do
+        max_retries = Keyword.validate(opts, max_retries: 3)
+
+        case Req.get(storage.req,
+               url: uri,
+               max_retries: max_retries
+             ) do
           {:ok, %Req.Response{status: 200, body: binary}} ->
             {:ok, binary}
 
@@ -23,15 +46,21 @@ if Code.ensure_loaded?(ReqS3) do
             {:error, :not_found}
 
           {:ok, %Req.Response{status: status}} ->
-            raise "#{__MODULE__}.get/2 of uri #{to_string(uri)} failed with status code #{status}."
+            {:error, "Status code #{inspect(status)}"}
 
           {:error, error} ->
-            raise "#{__MODULE__}.get/2 of uri #{to_string(uri)} failed with #{inspect(error)}."
+            {:error, error}
         end
       end
 
-      def put(storage, uri, binary) do
-        case Req.put(storage.req, url: uri, body: binary) do
+      def put(storage, uri, binary, opts) do
+        max_retries = Keyword.validate(opts, max_retries: 3)
+
+        case Req.put(storage.req,
+               url: uri,
+               body: binary,
+               max_retries: max_retries
+             ) do
           {:ok, %Req.Response{status: 200}} ->
             :ok
 
@@ -43,8 +72,13 @@ if Code.ensure_loaded?(ReqS3) do
         end
       end
 
-      def delete(storage, uri) do
-        case Req.delete(storage.req, url: uri) do
+      def delete(storage, uri, opts) do
+        max_retries = Keyword.validate(opts, max_retries: 3)
+
+        case Req.delete(storage.req,
+               url: uri,
+               max_retries: max_retries
+             ) do
           {:ok, %Req.Response{status: 204}} ->
             :ok
 

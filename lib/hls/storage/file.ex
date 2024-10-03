@@ -4,7 +4,7 @@ defmodule HLS.Storage.File do
   def new(), do: %__MODULE__{}
 
   defimpl HLS.Storage do
-    def get(_storage, uri) do
+    def get(_storage, uri, _opts) do
       case File.read(to_path(uri)) do
         {:ok, binary} ->
           {:ok, binary}
@@ -17,7 +17,7 @@ defmodule HLS.Storage.File do
       end
     end
 
-    def put(_storage, uri, binary) do
+    def put(_storage, uri, binary, _opts) do
       path = to_path(uri)
 
       with :ok <- File.mkdir_p(Path.dirname(path)) do
@@ -25,7 +25,7 @@ defmodule HLS.Storage.File do
       end
     end
 
-    def delete(_storage, uri) do
+    def delete(_storage, uri, _opts) do
       File.rm(to_path(uri))
     end
 

@@ -173,7 +173,7 @@ defmodule HLS.Packager do
     manifest_uri = opts[:manifest_uri]
     storage = opts[:storage]
 
-    case Storage.get(storage, manifest_uri) do
+    case Storage.get(storage, manifest_uri, max_retries: 5) do
       {:ok, data} ->
         master = HLS.Playlist.unmarshal(data, %HLS.Playlist.Master{uri: opts[:manifest_uri]})
 
@@ -193,6 +193,10 @@ defmodule HLS.Packager do
           manifest_uri: manifest_uri,
           tracks: %{}
         }
+
+      {:error, error} ->
+        raise HLS.Packager.ResumeError,
+          message: "Cannot check current state on the storage: #{inspect(error)}."
     end
   end
 
@@ -319,7 +323,8 @@ defmodule HLS.Packager do
             Storage.put(
               packager.storage,
               HLS.Playlist.Media.build_segment_uri(packager.manifest_uri, uri),
-              payload
+              payload,
+              max_retries: 10
             )
 
           %{uri: uri, payload: payload}
@@ -355,7 +360,8 @@ defmodule HLS.Packager do
         Storage.put(
           packager.storage,
           HLS.Playlist.Media.build_segment_uri(packager.manifest_uri, segment.uri),
-          payload
+          payload,
+          max_retries: 10
         )
     end
 
@@ -394,7 +400,7 @@ defmodule HLS.Packager do
         | segments: track.pending_playlist.segments ++ finished_segments
       }
 
-      :ok = write_playlist(packager, pending_playlist)
+      write_playlist(packager, pending_playlist)
 
       %{track | upload_tasks: unfinished, pending_playlist: pending_playlist}
     end)
@@ -462,8 +468,8 @@ defmodule HLS.Packager do
               %{playlist | segments: [], finished: true, type: :vod}
             end)
 
-          :ok = write_playlist(packager, track.media_playlist)
-          :ok = delete_playlist(packager, track.pending_playlist)
+          :ok = write_playlist(packager, track.media_playlist, max_retries: 10)
+          :ok = delete_playlist(packager, track.pending_playlist, max_retries: 10)
 
           {id, track}
         end
@@ -645,8 +651,8 @@ defmodule HLS.Packager do
       end)
 
     if Enum.any?(moved_segments) do
-      :ok = write_playlist(packager, track.media_playlist)
-      :ok = write_playlist(packager, track.pending_playlist)
+      write_playlist(packager, track.media_playlist)
+      write_playlist(packager, track.pending_playlist)
     end
 
     track
@@ -706,7 +712,7 @@ defmodule HLS.Packager do
 
     if opts[:force] or all_playlists_ready? or sync_point_reached? do
       master_playlist = build_master(packager)
-      :ok = write_playlist(packager, master_playlist)
+      :ok = write_playlist(packager, master_playlist, max_retries: 10)
       Logger.debug(fn -> "#{__MODULE__}.maybe_write_master/2 master playlist written." end)
       %{packager | master_written?: true}
     else
@@ -818,19 +824,41 @@ defmodule HLS.Packager do
 
   defp to_pending_uri(uri), do: append_to_path(uri, "_pending")
 
-  defp write_playlist(packager, playlist) do
-    Storage.put(
-      packager.storage,
-      HLS.Playlist.build_absolute_uri(packager.manifest_uri, playlist.uri),
-      HLS.Playlist.marshal(playlist)
-    )
+  defp write_playlist(packager, playlist, storage_opts \\ []) do
+    case Storage.put(
+           packager.storage,
+           HLS.Playlist.build_absolute_uri(packager.manifest_uri, playlist.uri),
+           HLS.Playlist.marshal(playlist),
+           storage_opts
+         ) do
+      :ok ->
+        :ok
+
+      {:error, error} ->
+        Logger.warning(
+          "#{__MODULE__}.write_playlist/3 Failed to write #{to_string(playlist.uri)} because of error: #{inspect(error)}."
+        )
+
+        {:error, error}
+    end
   end
 
-  defp delete_playlist(packager, playlist) do
-    Storage.delete(
-      packager.storage,
-      HLS.Playlist.build_absolute_uri(packager.manifest_uri, playlist.uri)
-    )
+  defp delete_playlist(packager, playlist, storage_opts) do
+    case Storage.delete(
+           packager.storage,
+           HLS.Playlist.build_absolute_uri(packager.manifest_uri, playlist.uri),
+           storage_opts
+         ) do
+      :ok ->
+        :ok
+
+      {:error, error} ->
+        Logger.warning(
+          "#{__MODULE__}.write_playlist/3 Failed to write #{to_string(playlist.uri)} because of error: #{inspect(error)}."
+        )
+
+        {:error, error}
+    end
   end
 
   defp uri_to_track_id(master_uri, stream_uri) do
