@@ -65,10 +65,10 @@ if Code.ensure_loaded?(ReqS3) do
             :ok
 
           {:ok, %Req.Response{status: status}} ->
-            raise "#{__MODULE__}.put/3 of uri #{to_string(uri)} failed with status code #{status}."
+            {:error, "Status code #{inspect(status)}"}
 
           {:error, error} ->
-            raise "#{__MODULE__}.put/3 of uri #{to_string(uri)} failed with #{inspect(error)}."
+            {:error, error}
         end
       end
 
@@ -83,10 +83,10 @@ if Code.ensure_loaded?(ReqS3) do
             :ok
 
           {:ok, %Req.Response{status: status}} ->
-            raise "#{__MODULE__}.delete/2 of uri #{to_string(uri)} failed with status code #{status}."
+            {:error, "Status code #{inspect(status)}"}
 
           {:error, error} ->
-            raise "#{__MODULE__}.delete/2 of uri #{to_string(uri)} failed with #{inspect(error)}."
+            {:error, error}
         end
       end
     end
