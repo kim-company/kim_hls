@@ -26,7 +26,11 @@ defmodule HLS.Storage.File do
     end
 
     def delete(_storage, uri, _opts) do
-      File.rm(to_path(uri))
+      case File.rm(to_path(uri)) do
+        :ok -> :ok
+        {:error, :enoent} -> :ok
+        other -> other
+      end
     end
 
     defp to_path(%URI{scheme: "file"} = uri) do

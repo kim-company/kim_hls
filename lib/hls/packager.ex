@@ -910,7 +910,7 @@ defmodule HLS.Packager do
 
       {:error, error} ->
         Logger.warning(
-          "#{__MODULE__}.write_playlist/3 Failed to write #{to_string(playlist.uri)} because of error: #{inspect(error)}."
+          "#{__MODULE__}.delete_playlist/3 Failed to delete #{to_string(playlist.uri)} because of error: #{inspect(error)}."
         )
 
         {:error, error}
