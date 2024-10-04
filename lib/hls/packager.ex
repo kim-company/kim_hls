@@ -735,90 +735,146 @@ defmodule HLS.Packager do
   defp load_tracks(storage, master, opts) do
     resume_finished_tracks = Keyword.fetch!(opts, :resume_finished_tracks)
     restore_pending_segments = Keyword.fetch!(opts, :restore_pending_segments)
-    all_streams = Enum.concat(master.streams, master.alternative_renditions)
+    streams = Enum.concat(master.streams, master.alternative_renditions)
 
-    Enum.reduce(all_streams, %{}, fn stream, acc ->
-      media_playlist =
-        case Storage.get(storage, HLS.Playlist.build_absolute_uri(master.uri, stream.uri)) do
+    streams
+    |> Stream.map(fn stream ->
+      %Track{
+        stream: stream,
+        segment_extension: nil,
+        segment_count: 0,
+        init_section: nil,
+        duration: 0,
+        media_playlist: nil,
+        pending_playlist: nil
+      }
+    end)
+    # Load media playlist
+    |> Task.async_stream(
+      fn track ->
+        result =
+          Storage.get(
+            storage,
+            HLS.Playlist.build_absolute_uri(master.uri, track.stream.uri)
+          )
+
+        case result do
           {:ok, data} ->
-            media = HLS.Playlist.unmarshal(data, %HLS.Playlist.Media{uri: stream.uri})
+            playlist = HLS.Playlist.unmarshal(data, %HLS.Playlist.Media{uri: track.stream.uri})
+            {track, {:ok, playlist}}
 
-            cond do
-              media.finished and not resume_finished_tracks ->
-                raise HLS.Packager.PlaylistFinishedError,
-                  message: "Cannot resume a finished media playlist: #{to_string(stream.uri)}"
+          other ->
+            {track, other}
+        end
+      end,
+      concurrency: length(streams),
+      timeout: :infinity,
+      ordered: false
+    )
+    |> Stream.map(fn {:ok, {track, result}} ->
+      case result do
+        {:ok, media} ->
+          cond do
+            media.finished and not resume_finished_tracks ->
+              raise HLS.Packager.PlaylistFinishedError,
+                    "Cannot resume a finished media playlist: #{to_string(track.stream.uri)}"
 
-              resume_finished_tracks ->
+            resume_finished_tracks ->
+              media =
                 media
                 |> Map.replace!(:finished, false)
                 |> Map.replace!(:type, :event)
 
-              true ->
-                media
-            end
+              %{track | media_playlist: media}
 
-          {:error, :not_found} ->
-            raise HLS.Packager.PlaylistNotFoundError,
-              message: "Cannot load media playlist: #{to_string(stream.uri)}"
-        end
+            true ->
+              %{track | media_playlist: media}
+          end
 
-      pending_uri = to_pending_uri(stream.uri)
+        {:error, :not_found} ->
+          raise HLS.Packager.PlaylistNotFoundError,
+            message: "Cannot load media playlist: #{to_string(track.stream.uri)}"
 
-      pending_playlist =
-        with {:restore_pending, true} <- {:restore_pending, restore_pending_segments},
-             {:ok, data} <-
-               Storage.get(storage, HLS.Playlist.build_absolute_uri(master.uri, pending_uri)) do
-          data
-          |> HLS.Playlist.unmarshal(%HLS.Playlist.Media{uri: pending_uri})
-          |> Map.replace!(:finished, false)
-          |> Map.replace!(:type, :event)
-        else
-          _error ->
-            %HLS.Playlist.Media{
-              uri: pending_uri,
-              type: :event,
-              target_segment_duration: media_playlist.target_segment_duration,
-              version: media_playlist.version
-            }
-        end
-
-      all_segments = Enum.reverse(media_playlist.segments ++ pending_playlist.segments)
-
-      if Enum.empty?(all_segments) do
-        raise HLS.Packager.ResumeError, message: "Cannot resume a playlist without segments."
+        {:error, error} ->
+          raise HLS.Packager.ResumeError,
+            message:
+              "Cannot initialize current steat of playlist #{to_string(track.stream.uri)} because of error: #{inspect(error)}"
       end
+    end)
+    # Load pending playlist
+    |> Task.async_stream(
+      fn track ->
+        pending_uri = to_pending_uri(track.stream.uri)
 
-      last_segment = hd(all_segments)
+        pending_playlist =
+          with {:restore_pending, true} <- {:restore_pending, restore_pending_segments},
+               {:ok, data} <-
+                 Storage.get(storage, HLS.Playlist.build_absolute_uri(master.uri, pending_uri)) do
+            data
+            |> HLS.Playlist.unmarshal(%HLS.Playlist.Media{uri: pending_uri})
+            |> Map.replace!(:finished, false)
+            |> Map.replace!(:type, :event)
+          else
+            _error ->
+              %HLS.Playlist.Media{
+                uri: pending_uri,
+                type: :event,
+                target_segment_duration: track.media_playlist.target_segment_duration,
+                version: track.media_playlist.version
+              }
+          end
 
-      segment_extension =
-        last_segment.uri
-        |> to_string()
-        |> Path.extname()
+        %{track | pending_playlist: pending_playlist}
+      end,
+      concurrency: length(streams),
+      timeout: :infinity,
+      ordered: false
+    )
+    # Initializes the rest
+    |> Task.async_stream(
+      fn {:ok, track} ->
+        all_segments =
+          track.media_playlist.segments
+          |> Enum.concat(track.pending_playlist.segments)
+          |> Enum.reverse()
 
-      init_section =
-        if last_segment.init_section do
-          {:ok, payload} =
-            Storage.get(
-              storage,
-              HLS.Playlist.Media.build_segment_uri(master.uri, last_segment.init_section.uri)
-            )
-
-          %{uri: last_segment.init_section.uri, payload: payload}
+        if Enum.empty?(all_segments) do
+          raise HLS.Packager.ResumeError, message: "Cannot resume a playlist without segments."
         end
 
-      track_id = uri_to_track_id(master.uri, stream.uri)
+        last_segment = hd(all_segments)
 
-      track = %Track{
-        stream: stream,
-        segment_extension: segment_extension,
-        segment_count: length(all_segments),
-        init_section: init_section,
-        duration: HLS.Playlist.Media.compute_playlist_duration(media_playlist),
-        media_playlist: media_playlist,
-        pending_playlist: pending_playlist
-      }
+        segment_extension =
+          last_segment.uri
+          |> to_string()
+          |> Path.extname()
 
-      Map.put(acc, track_id, track)
+        init_section =
+          if last_segment.init_section do
+            {:ok, payload} =
+              Storage.get(
+                storage,
+                HLS.Playlist.Media.build_segment_uri(master.uri, last_segment.init_section.uri)
+              )
+
+            %{uri: last_segment.init_section.uri, payload: payload}
+          end
+
+        %{
+          track
+          | segment_extension: segment_extension,
+            segment_count: length(all_segments),
+            init_section: init_section,
+            duration: HLS.Playlist.Media.compute_playlist_duration(track.media_playlist)
+        }
+      end,
+      concurrency: length(streams),
+      timeout: :infinity,
+      ordered: false
+    )
+    |> Map.new(fn {:ok, track} ->
+      track_id = uri_to_track_id(master.uri, track.stream.uri)
+      {track_id, track}
     end)
   end
 
