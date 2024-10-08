@@ -2,118 +2,29 @@ defmodule HLS.Packager do
   @moduledoc """
   The `HLS.Packager` module is responsible for managing and generating media and master playlists
   for HTTP Live Streaming (HLS). It handles various tasks such as loading and saving playlists,
-  inserting new streams, adding segments, and maintaining synchronization points for different streams.
-
-  ## Usage
-
-  ### Initializing a Packager
-
-  The `new/1` function initializes a new `HLS.Packager` with a storage backend and manifest URI. 
-  It either loads an existing master playlist (if it exists) or creates a new one if no playlist is found.
-
-  Example:
-  ```elixir
-  HLS.Packager.new(
-    storage: HLS.Storage.File.new(),
-    manifest_uri: URI.new!("file://path/to/stream.m3u8")
-  )
-  ```
-
-  ### Managing tracks
-
-  You can insert a new track using the `add_track/3` function, which allows adding variant streams
-  or alternative renditions to the packager. Tracks can only be inserted before the master playlist has been written.
-
-  Example:
-  ```elixir
-  {packager, stream_id} = Packager.add_track(
-    packager,
-    "416x234",
-    stream: %HLS.VariantStream{
-      uri: URI.new!("stream_416x234.m3u8"),
-      bandwidth: 341_276,
-      resolution: {416, 234},
-      codecs: ["avc1.64000c", "mp4a.40.2"]
-    },
-    segment_extension: ".m4s",
-    target_segment_duration: 7
-  )
-  ```
-
-  ### Adding the init section
-
-  The `put_init_section/3` function adds or updates the initialization section (such as an MPEG-4 ‘init’ section)
-  for a stream. This section will be used for all upcoming segments and is essential for media formats like fragmented
-  MP4 where an initial header is required before media segments can be played.
-
-  If the init section has changed, it is uploaded and associated with future segments. If no payload is provided,
-  the init section is removed.
-
-  Example:
-  ```elixir
-  HLS.Packager.put_init_section(packager, track_id, init_segment_data)
-  ```
-
-  ### Adding Segments
-
-  The `put_segment/4` function allows adding a new segment to a track. It will update the playlist with the new segment and write it to storage.
-
-  Example:
-  ```elixir
-  HLS.Packager.put_segment(packager, track_id, segment_data, 10.0)
-  ```
-
-  ### Adding Segments Asynchronously
-
-  The `put_segment_async/4` function allows you to add a new segment to a track asynchronously. This function returns a reference to the segment upload task along with a function to perform the upload. After invoking the upload function, you must call the `ack_segment/3` function to acknowledge the segment upload and update the playlist.
-
-  This method is useful when dealing with concurrent uploads of segments while keeping the playlist updates consistent.
-
-  Example:
-  ```elixir
-  {packager, {ref, upload_fun}} = HLS.Packager.put_segment_async(packager, track_id, segment_data, 10.0)
-  :ok = upload_fun.()
-  HLS.Packager.ack_segment(packager, track_id, ref)
-  ```
-
-  ### Discontinuing Tracks
-
-  The `discontinue_track/2` function forces the next segment to be added to the track with an EXT-X-DISCONTINUITY tag. This tag is used in HLS playlists to indicate that there is a discontinuity in the media timeline, such as a change in codec, resolution, or other major differences between segments.
-
-  This is useful for signaling transitions between different media formats or changes in the stream, making sure that the HLS client can handle the change smoothly.
-
-  Example:
-  ```elixir
-  packager = HLS.Packager.discontinue_track(packager, track_id)
-  ```
-
-  ### Synchronization and Flushing
-
-  The sync/2 function synchronizes media playlists by moving segments from the pending playlist to the main playlist, ensuring that all trackss are properly aligned.
-  The flush/1 function writes any remaining segments and marks all playlists as finished.
-
-  Example:
-  ```elixir
-  HLS.Packager.sync(packager, 14)
-  HLS.Packager.flush(packager)
-  ```
+  inserting new streams, uploading segments and maintaining synchronization points for different streams.
   """
 
+  use GenServer
   alias HLS.Storage
   require Logger
+
+  @type track_id :: String.t()
 
   @type t() :: %__MODULE__{
           master_written?: boolean(),
           storage: HLS.Storage.t(),
           manifest_uri: URI.t(),
-          tracks: %{String.t() => Track.t()}
+          tracks: %{track_id() => Track.t()},
+          upload_tasks_to_track: %{Task.ref() => track_id()}
         }
 
   defstruct [
     :master_written?,
     :storage,
     :manifest_uri,
-    tracks: %{}
+    tracks: %{},
+    upload_tasks_to_track: %{}
   ]
 
   defmodule Track do
@@ -154,265 +65,122 @@ defmodule HLS.Packager do
 
   ## Examples
 
-      iex> HLS.Packager.new(
-      ...>   storage: HLS.Storage.File.new(),
-      ...>   manifest_uri: URI.new!("file://stream.m3u8"),
-      ...>   resume_finished_tracks: false,
-      ...>   restore_pending_segments: true
-      ...> )
+  ```elixir
+  HLS.Packager.start_link(
+    storage: HLS.Storage.File.new(),
+    manifest_uri: URI.new!("file://stream.m3u8"),
+    resume_finished_tracks: false,
+    restore_pending_segments: true
+  )
+  ```
   """
-  def new(opts) do
+
+  def start_link(opts) do
     opts =
       Keyword.validate!(opts, [
         :storage,
         :manifest_uri,
         resume_finished_tracks: false,
-        restore_pending_segments: true
+        restore_pending_segments: true,
+        name: nil
       ])
 
-    manifest_uri = opts[:manifest_uri]
-    storage = opts[:storage]
-
-    case Storage.get(storage, manifest_uri, max_retries: 5) do
-      {:ok, data} ->
-        master = HLS.Playlist.unmarshal(data, %HLS.Playlist.Master{uri: opts[:manifest_uri]})
-
-        load_track_opts = Keyword.take(opts, [:resume_finished_tracks, :restore_pending_segments])
-
-        %__MODULE__{
-          master_written?: true,
-          storage: storage,
-          manifest_uri: manifest_uri,
-          tracks: load_tracks(storage, master, load_track_opts)
-        }
-
-      {:error, :not_found} ->
-        %__MODULE__{
-          master_written?: false,
-          storage: storage,
-          manifest_uri: manifest_uri,
-          tracks: %{}
-        }
-
-      {:error, error} ->
-        raise HLS.Packager.ResumeError,
-          message: "Cannot check current state on the storage: #{inspect(error)}."
-    end
-  end
-
-  @doc """
-  Will force that the next added segment has an `EXT-X-DISCONTINUITY` tag.
-  """
-  def discontinue_track(packager, track_id) do
-    update_track(
-      packager,
-      track_id,
-      fn track -> %{track | discontinue_next_segment: true} end
-    )
-  end
-
-  @doc """
-  Finds a track from the packager.
-  """
-  def get_track(packager, track_id) do
-    Map.get(packager.tracks, track_id)
+    {server_opts, opts} = Keyword.split(opts, [:name])
+    GenServer.start_link(__MODULE__, opts, server_opts)
   end
 
   @doc """
   Checks if the given track already exists in the packager.
   """
+  @spec has_track?(GenServer.server(), track_id()) :: boolean()
   def has_track?(packager, track_id) do
-    Map.has_key?(packager.tracks, track_id)
+    GenServer.call(packager, {:has_track?, track_id})
+  end
+
+  @doc """
+  Adds a new track to the packager.
+  Tracks can only be added as long as the master playlist has not been written yet.
+
+  ## Examples
+
+  ```elixir
+  Packager.add_track(
+    packager,
+    "416x234",
+    stream: %HLS.VariantStream{
+      uri: URI.new!("stream_416x234.m3u8"),
+      bandwidth: 341_276,
+      resolution: {416, 234},
+      codecs: ["avc1.64000c", "mp4a.40.2"]
+    },
+    segment_extension: ".m4s",
+    target_segment_duration: 7
+  )
+  ```
+  """
+  @type add_track_opt ::
+          {:stream, HLS.VariantStream.t() | HLS.AlternativeRendition.t()}
+          | {:segment_extension, String.t()}
+          | {:target_segment_duration, float()}
+          | {:codecs, [String.t()]}
+  @spec add_track(GenServer.server(), track_id(), [add_track_opt()]) :: :ok
+  def add_track(packager, track_id, opts) do
+    GenServer.call(packager, {:add_track, track_id, opts})
+  end
+
+  @doc """
+  Will force that the next added segment has an `EXT-X-DISCONTINUITY` tag.
+  """
+  @spec discontinue_track(GenServer.server(), track_id()) :: :ok
+  def discontinue_track(packager, track_id) do
+    GenServer.cast(packager, {:discontinue_track, track_id})
   end
 
   @doc """
   Returns the maximum track duration.
   """
+  @spec max_track_duration(GenServer.server()) :: non_neg_integer()
   def max_track_duration(packager) do
-    packager.tracks
-    |> Enum.map(fn {_track_id, track} ->
-      track.duration + HLS.Playlist.Media.compute_playlist_duration(track.pending_playlist)
-    end)
-    |> Enum.max(&>=/2, fn -> 0 end)
+    GenServer.call(packager, :max_track_duration)
   end
 
   @doc """
   Returns the duration of the given track.
   """
+  @spec track_duration(GenServer.server(), track_id()) ::
+          {:ok, non_neg_integer()} | {:error, :not_found}
   def track_duration(packager, track_id) do
-    case get_track(packager, track_id) do
-      nil ->
-        raise HLS.Packager.TrackNotFoundError, "Track with id track_id does not exist."
-
-      track ->
-        track.duration + HLS.Playlist.Media.compute_playlist_duration(track.pending_playlist)
-    end
+    GenServer.call(packager, {:track_duration, track_id})
   end
 
   @doc """
-  Adds a new track to the packager.
+  The `put_init_section/3` function adds or updates the initialization section (such as an MPEG-4 ‘init’ section)
+  for the given track. This section will be used for all upcoming segments and is essential for media formats like fragmented
+  MP4 where an initial header is required before media segments can be played.
 
-  Tracks can only be added as long as the master playlist has not been written yet.
+  If the init section has changed, it is uploaded and associated with future segments. If no payload is provided,
+  the init section is removed.
   """
-  def add_track(packager, track_id, opts) do
-    opts =
-      Keyword.validate!(opts, [
-        :stream,
-        :segment_extension,
-        :target_segment_duration,
-        codecs: []
-      ])
-
-    stream = opts[:stream]
-
-    cond do
-      Map.has_key?(packager.tracks, track_id) ->
-        raise HLS.Packager.AddTrackError,
-          message: "The track already exists."
-
-      packager.master_written? ->
-        raise HLS.Packager.AddTrackError,
-          message: "Cannot add a new track if the master playlist was already written."
-
-      true ->
-        media_playlist = %HLS.Playlist.Media{
-          uri: stream.uri,
-          target_segment_duration: opts[:target_segment_duration],
-          type: :event
-        }
-
-        track = %Track{
-          stream: stream,
-          duration: 0.0,
-          init_section: nil,
-          segment_count: 0,
-          media_playlist: media_playlist,
-          segment_extension: opts[:segment_extension],
-          pending_playlist: %{media_playlist | uri: to_pending_uri(stream.uri)},
-          codecs: opts[:codecs]
-        }
-
-        put_in(packager, [Access.key!(:tracks), track_id], track)
-    end
-  end
-
-  @doc """
-  Puts a new init section that will be used for all upcoming segments.
-  """
+  @spec put_init_section(GenServer.server(), track_id(), binary() | nil) :: :ok
   def put_init_section(packager, track_id, payload) do
-    track = Map.fetch!(packager.tracks, track_id)
-
-    extname =
-      case track.segment_extension do
-        ".mp4" -> ".mp4"
-        ".m4s" -> ".mp4"
-        other -> raise "Init section is not supported for #{other} segments."
-      end
-
-    init_section =
-      cond do
-        is_nil(payload) ->
-          nil
-
-        is_nil(track.init_section) or track.init_section.payload != payload ->
-          next_index = track.segment_count + 1
-          segment_uri = relative_segment_uri(track.media_playlist.uri, extname, next_index)
-          uri = append_to_path(segment_uri, "_init")
-
-          :ok =
-            Storage.put(
-              packager.storage,
-              HLS.Playlist.Media.build_segment_uri(packager.manifest_uri, uri),
-              payload,
-              max_retries: 10
-            )
-
-          %{uri: uri, payload: payload}
-
-        true ->
-          track.init_section
-      end
-
-    update_track(packager, track_id, fn track -> %{track | init_section: init_section} end)
+    GenServer.cast(packager, {:put_init_section, track_id, payload})
   end
 
   @doc """
-  Adds a new segment asynchronously to the playlist.
+  Adds a new segment asynchronously to the given track.
   """
-  def put_segment_async(packager, track_id, payload, duration) do
-    track = Map.fetch!(packager.tracks, track_id)
-    stream_uri = track.media_playlist.uri
-    next_index = track.segment_count + 1
-    segment_uri = relative_segment_uri(stream_uri, track.segment_extension, next_index)
-    init_section = if track.init_section, do: %{uri: track.init_section[:uri]}
-    ref = make_ref()
-
-    segment =
-      %HLS.Segment{
-        uri: segment_uri,
-        duration: duration,
-        init_section: init_section,
-        discontinuity: track.discontinue_next_segment
-      }
-
-    upload_fun = fn ->
-      :ok =
-        Storage.put(
-          packager.storage,
-          HLS.Playlist.Media.build_segment_uri(packager.manifest_uri, segment.uri),
-          payload,
-          max_retries: 10
-        )
-    end
-
-    packager =
-      update_track(packager, track_id, fn track ->
-        track
-        |> Map.update!(:segment_count, &(&1 + 1))
-        |> Map.replace!(:discontinue_next_segment, false)
-        |> Map.update!(:upload_tasks, fn tasks ->
-          tasks ++ [%{ref: ref, segment: segment, uploaded: false}]
-        end)
-      end)
-
-    {packager, {ref, upload_fun}}
-  end
-
-  @doc """
-  Confirms a successful segment upload.
-  """
-  def ack_segment(packager, track_id, ref) do
-    update_track(packager, track_id, fn track ->
-      upload_tasks =
-        Enum.map(track.upload_tasks, fn upload_task ->
-          if upload_task.ref == ref do
-            %{upload_task | uploaded: true}
-          else
-            upload_task
-          end
-        end)
-
-      {finished, unfinished} = Enum.split_while(upload_tasks, & &1.uploaded)
-      finished_segments = Enum.map(finished, & &1.segment)
-
-      pending_playlist = %{
-        track.pending_playlist
-        | segments: track.pending_playlist.segments ++ finished_segments
-      }
-
-      write_playlist(packager, pending_playlist)
-
-      %{track | upload_tasks: unfinished, pending_playlist: pending_playlist}
-    end)
-  end
-
-  @doc """
-  Adds a new segment into the playlist.
-  """
+  @spec put_segment(GenServer.server(), track_id(), binary(), float()) :: :ok
   def put_segment(packager, track_id, payload, duration) do
-    {packager, {ref, upload_fun}} = put_segment_async(packager, track_id, payload, duration)
-    :ok = upload_fun.()
-    ack_segment(packager, track_id, ref)
+    GenServer.cast(packager, {:put_segment, track_id, payload, duration})
+  end
+
+  @doc """
+  Writes down the remaining segments and marks all playlists as finished (EXT-X-ENDLIST).
+  Deletes pending playlists.
+  """
+  @spec flush(GenServer.server()) :: :ok
+  def flush(packager) do
+    GenServer.call(packager, :flush, :infinity)
   end
 
   @doc """
@@ -442,14 +210,212 @@ defmodule HLS.Packager do
     |> maybe_write_master(sync_point: sync_point)
   end
 
-  @doc """
-  Writes down the remaining segments and marks all playlists as finished (EXT-X-ENDLIST).
-  Deletes pending playlists.
-  """
-  def flush(packager) do
+  # Callbacks
+
+  @impl true
+  def init(opts) do
+    manifest_uri = opts[:manifest_uri]
+    storage = opts[:storage]
+
+    case Storage.get(storage, manifest_uri, max_retries: 5) do
+      {:ok, data} ->
+        master = HLS.Playlist.unmarshal(data, %HLS.Playlist.Master{uri: opts[:manifest_uri]})
+        load_track_opts = Keyword.take(opts, [:resume_finished_tracks, :restore_pending_segments])
+
+        {:ok,
+         %__MODULE__{
+           master_written?: true,
+           storage: storage,
+           manifest_uri: manifest_uri,
+           tracks: load_tracks(storage, master, load_track_opts)
+         }}
+
+      {:error, :not_found} ->
+        {:ok,
+         %__MODULE__{
+           master_written?: false,
+           storage: storage,
+           manifest_uri: manifest_uri,
+           tracks: %{}
+         }}
+
+      {:error, error} ->
+        raise HLS.Packager.ResumeError,
+          message: "Cannot check current state on the storage: #{inspect(error)}."
+    end
+  end
+
+  @impl true
+  def handle_cast({:discontinue_track, track_id}, state) do
+    {:noreply,
+     update_track(
+       state,
+       track_id,
+       fn track -> %{track | discontinue_next_segment: true} end
+     )}
+  end
+
+  def handle_cast({:put_init_section, track_id, payload}, state) do
+    track = Map.fetch!(state.tracks, track_id)
+
+    extname =
+      case track.segment_extension do
+        ".mp4" -> ".mp4"
+        ".m4s" -> ".mp4"
+        other -> raise "Init section is not supported for #{other} segments."
+      end
+
+    init_section =
+      cond do
+        is_nil(payload) ->
+          nil
+
+        is_nil(track.init_section) or track.init_section.payload != payload ->
+          next_index = track.segment_count + 1
+          segment_uri = relative_segment_uri(track.media_playlist.uri, extname, next_index)
+          uri = append_to_path(segment_uri, "_init")
+
+          :ok =
+            Storage.put(
+              state.storage,
+              HLS.Playlist.Media.build_segment_uri(state.manifest_uri, uri),
+              payload,
+              max_retries: 10
+            )
+
+          %{uri: uri, payload: payload}
+
+        true ->
+          track.init_section
+      end
+
+    {:noreply,
+     update_track(
+       state,
+       track_id,
+       fn track -> %{track | init_section: init_section} end
+     )}
+  end
+
+  def handle_cast({:put_segment, track_id, payload, duration}, state) do
+    track = Map.fetch!(state.tracks, track_id)
+    stream_uri = track.media_playlist.uri
+    next_index = track.segment_count + 1
+    segment_uri = relative_segment_uri(stream_uri, track.segment_extension, next_index)
+    init_section = if track.init_section, do: %{uri: track.init_section[:uri]}
+
+    segment =
+      %HLS.Segment{
+        uri: segment_uri,
+        duration: duration,
+        init_section: init_section,
+        discontinuity: track.discontinue_next_segment
+      }
+
+    # TODO: Task.Supervisor.async_nolink?
+    task =
+      Task.async(fn ->
+        :ok =
+          Storage.put(
+            state.storage,
+            HLS.Playlist.Media.build_segment_uri(state.manifest_uri, segment.uri),
+            payload,
+            max_retries: 10
+          )
+      end)
+
+    state =
+      state
+      |> put_in([Access.key!(:upload_tasks_to_track), task.ref], track_id)
+      |> update_track(track_id, fn track ->
+        track
+        |> Map.update!(:segment_count, &(&1 + 1))
+        |> Map.replace!(:discontinue_next_segment, false)
+        |> Map.update!(:upload_tasks, fn tasks ->
+          tasks ++ [%{ref: task.ref, segment: segment, uploaded: false}]
+        end)
+      end)
+
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_call({:has_track?, track_id}, _from, state) do
+    {:reply, Map.has_key?(state.tracks, track_id), state}
+  end
+
+  def handle_call({:track_duration, track_id}, _from, state) do
+    case Map.get(state.tracks, track_id) do
+      nil ->
+        {:reply, {:error, :not_found}, state}
+
+      track ->
+        duration =
+          track.duration + HLS.Playlist.Media.compute_playlist_duration(track.pending_playlist)
+
+        {:reply, {:ok, duration}, state}
+    end
+  end
+
+  def handle_call(:max_track_duration, _from, state) do
+    duration =
+      state.tracks
+      |> Enum.map(fn {_track_id, track} ->
+        track.duration + HLS.Playlist.Media.compute_playlist_duration(track.pending_playlist)
+      end)
+      |> Enum.max(&>=/2, fn -> 0 end)
+
+    {:reply, duration, state}
+  end
+
+  def handle_call({:add_track, track_id, opts}, _from, state) do
+    opts =
+      Keyword.validate!(opts, [
+        :stream,
+        :segment_extension,
+        :target_segment_duration,
+        codecs: []
+      ])
+
+    stream =
+      opts[:stream]
+      |> Map.put(:uri, new_variant_uri(state, track_id))
+
+    cond do
+      Map.has_key?(state.tracks, track_id) ->
+        {:reply, {:error, :track_already_exists}, state}
+
+      state.master_written? ->
+        {:reply, {:error, :master_playlist_written}, state}
+
+      true ->
+        media_playlist = %HLS.Playlist.Media{
+          uri: stream.uri,
+          target_segment_duration: opts[:target_segment_duration],
+          type: :event
+        }
+
+        track = %Track{
+          stream: stream,
+          duration: 0.0,
+          init_section: nil,
+          segment_count: 0,
+          media_playlist: media_playlist,
+          segment_extension: opts[:segment_extension],
+          pending_playlist: %{media_playlist | uri: to_pending_uri(stream.uri)},
+          codecs: opts[:codecs]
+        }
+
+        {:reply, :ok, put_in(state, [Access.key!(:tracks), track_id], track)}
+    end
+  end
+
+  def handle_call(:flush, _from, state) do
+    # TODO(phil): Finish all pending uploads!!
+
     tracks =
       Map.new(
-        packager.tracks,
+        state.tracks,
         fn {id, track} ->
           pending_duration = HLS.Playlist.Media.compute_playlist_duration(track.pending_playlist)
 
@@ -468,8 +434,8 @@ defmodule HLS.Packager do
               %{playlist | segments: [], finished: true, type: :vod}
             end)
 
-          :ok = write_playlist(packager, track.media_playlist, max_retries: 10)
-          :ok = delete_playlist(packager, track.pending_playlist, max_retries: 10)
+          :ok = write_playlist(state, track.media_playlist, max_retries: 10)
+          :ok = delete_playlist(state, track.pending_playlist, max_retries: 10)
 
           {id, track}
         end
@@ -487,15 +453,48 @@ defmodule HLS.Packager do
       """
     end)
 
-    packager
-    |> Map.replace!(:tracks, tracks)
-    |> maybe_write_master(force: true)
+    state =
+      state
+      |> Map.replace!(:tracks, tracks)
+      |> maybe_write_master(force: true)
+
+    {:reply, :ok, state}
   end
 
-  @doc """
-  Builds the master playlist of the given packager.
-  """
-  def build_master(packager) do
+  def handle_info({ref, :ok}, _ctx, state) when is_map_key(state.upload_tasks_to_track, ref) do
+    Process.demonitor(ref, [:flush])
+    {track_id, state} = pop_in(state, [Access.key!(:upload_tasks_to_track), ref])
+
+    update_track(state, track_id, fn track ->
+      upload_tasks =
+        Enum.map(track.upload_tasks, fn upload_task ->
+          if upload_task.ref == ref do
+            %{upload_task | uploaded: true}
+          else
+            upload_task
+          end
+        end)
+
+      {finished, unfinished} = Enum.split_while(upload_tasks, & &1.uploaded)
+      finished_segments = Enum.map(finished, & &1.segment)
+
+      pending_playlist = %{
+        track.pending_playlist
+        | segments: track.pending_playlist.segments ++ finished_segments
+      }
+
+      write_playlist(state, pending_playlist)
+
+      %{track | upload_tasks: unfinished, pending_playlist: pending_playlist}
+    end)
+  end
+
+  def handle_info({:DOWN, ref, _, _, reason}, _ctx, state)
+      when is_map_key(state.upload_tasks_to_track, ref) do
+    raise "Cannot write segment of track #{state.track_id} with reason: #{inspect(reason)}."
+  end
+
+  defp build_master(packager) do
     alternative_tracks =
       packager.tracks
       |> Map.values()
