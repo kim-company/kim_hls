@@ -187,27 +187,17 @@ defmodule HLS.Packager do
   Returns the next synchronization point which
   can then be passed to the `sync/2` function.
   """
-  def next_sync_point(%{tracks: []}, target_duration), do: target_duration
-
+  @spec next_sync_point(GenServer.server(), pos_integer()) :: pos_integer()
   def next_sync_point(packager, target_duration) do
-    max_duration =
-      packager.tracks
-      |> Enum.map(fn {_id, track} -> track.duration end)
-      |> Enum.max()
-
-    max(
-      ceil(max_duration / target_duration) * target_duration,
-      target_duration
-    )
+    GenServer.call(packager, {:next_sync_point, target_duration})
   end
 
   @doc """
-  Synchornizes all media playlists and writes down the master playlist as soon as needed.
+  Synchronizes all media playlists and writes down the master playlist as soon as needed.
   """
+  @spec sync(GenServer.server(), pos_integer()) :: :ok
   def sync(packager, sync_point) do
-    packager
-    |> sync_playlists(sync_point)
-    |> maybe_write_master(sync_point: sync_point)
+    GenServer.cast(packager, {:sync, sync_point})
   end
 
   # Callbacks
@@ -246,6 +236,14 @@ defmodule HLS.Packager do
   end
 
   @impl true
+  def handle_cast({:sync, sync_point}, state) do
+    state
+    |> sync_playlists(sync_point)
+    |> maybe_write_master(sync_point: sync_point)
+
+    {:noreply, state}
+  end
+
   def handle_cast({:discontinue_track, track_id}, state) do
     {:noreply,
      update_track(
@@ -332,7 +330,7 @@ defmodule HLS.Packager do
         |> Map.update!(:segment_count, &(&1 + 1))
         |> Map.replace!(:discontinue_next_segment, false)
         |> Map.update!(:upload_tasks, fn tasks ->
-          tasks ++ [%{ref: task.ref, segment: segment, uploaded: false}]
+          tasks ++ [%{task: task, segment: segment, uploaded: false}]
         end)
       end)
 
@@ -342,6 +340,21 @@ defmodule HLS.Packager do
   @impl true
   def handle_call({:has_track?, track_id}, _from, state) do
     {:reply, Map.has_key?(state.tracks, track_id), state}
+  end
+
+  def handle_call({:next_sync_point, target_duration}, _from, state) do
+    max_duration =
+      state.tracks
+      |> Enum.map(fn {_id, track} -> track.duration end)
+      |> Enum.max(fn -> 0 end)
+
+    sync_point =
+      max(
+        ceil(max_duration / target_duration) * target_duration,
+        target_duration
+      )
+
+    {:reply, sync_point, state}
   end
 
   def handle_call({:track_duration, track_id}, _from, state) do
@@ -411,11 +424,25 @@ defmodule HLS.Packager do
   end
 
   def handle_call(:flush, _from, state) do
-    # TODO(phil): Finish all pending uploads!!
-
     tracks =
-      Map.new(
-        state.tracks,
+      state.tracks
+      # finish pending uploads
+      |> Stream.map(fn {id, track} ->
+        track.upload_tasks
+        |> Enum.map(& &1.task)
+        |> Task.await_many(:infinity)
+
+        pending_playlist = %{
+          track.pending_playlist
+          | segments:
+              track.pending_playlist.segments ++ Enum.map(track.upload_tasks, & &1.segment)
+        }
+
+        track = %{track | pending_playlist: pending_playlist, upload_tasks: %{}}
+        {id, track}
+      end)
+      # update playlists
+      |> Task.async_stream(
         fn {id, track} ->
           pending_duration = HLS.Playlist.Media.compute_playlist_duration(track.pending_playlist)
 
@@ -438,8 +465,12 @@ defmodule HLS.Packager do
           :ok = delete_playlist(state, track.pending_playlist, max_retries: 10)
 
           {id, track}
-        end
+        end,
+        concurrency: map_size(state.tracks),
+        ordered: false,
+        timeout: :infinity
       )
+      |> Map.new(fn {:ok, {id, track}} -> {id, track} end)
 
     Logger.debug(fn ->
       track_info =
@@ -456,41 +487,48 @@ defmodule HLS.Packager do
     state =
       state
       |> Map.replace!(:tracks, tracks)
+      |> Map.replace!(:upload_tasks_to_track, %{})
       |> maybe_write_master(force: true)
 
     {:reply, :ok, state}
   end
 
-  def handle_info({ref, :ok}, _ctx, state) when is_map_key(state.upload_tasks_to_track, ref) do
+  @impl true
+  def handle_info({ref, :ok}, state) when is_map_key(state.upload_tasks_to_track, ref) do
     Process.demonitor(ref, [:flush])
     {track_id, state} = pop_in(state, [Access.key!(:upload_tasks_to_track), ref])
 
-    update_track(state, track_id, fn track ->
-      upload_tasks =
-        Enum.map(track.upload_tasks, fn upload_task ->
-          if upload_task.ref == ref do
-            %{upload_task | uploaded: true}
-          else
-            upload_task
-          end
-        end)
+    state =
+      update_track(state, track_id, fn track ->
+        upload_tasks =
+          Enum.map(track.upload_tasks, fn upload_task ->
+            if upload_task.task.ref == ref do
+              %{upload_task | uploaded: true}
+            else
+              upload_task
+            end
+          end)
 
-      {finished, unfinished} = Enum.split_while(upload_tasks, & &1.uploaded)
-      finished_segments = Enum.map(finished, & &1.segment)
+        {finished, unfinished} = Enum.split_while(upload_tasks, & &1.uploaded)
+        finished_segments = Enum.map(finished, & &1.segment)
 
-      pending_playlist = %{
-        track.pending_playlist
-        | segments: track.pending_playlist.segments ++ finished_segments
-      }
+        pending_playlist = %{
+          track.pending_playlist
+          | segments: track.pending_playlist.segments ++ finished_segments
+        }
 
-      write_playlist(state, pending_playlist)
+        write_playlist(state, pending_playlist)
 
-      %{track | upload_tasks: unfinished, pending_playlist: pending_playlist}
-    end)
+        %{track | upload_tasks: unfinished, pending_playlist: pending_playlist}
+      end)
+
+    {:noreply, state}
   end
 
-  def handle_info({:DOWN, ref, _, _, reason}, _ctx, state)
+  @impl true
+  def handle_info({:DOWN, ref, _, _, reason}, state)
       when is_map_key(state.upload_tasks_to_track, ref) do
+    # TODO: Maybe we should write the segment in the playlist and just continue as nothing has happened?
     raise "Cannot write segment of track #{state.track_id} with reason: #{inspect(reason)}."
   end
 
@@ -529,19 +567,7 @@ defmodule HLS.Packager do
     }
   end
 
-  @doc """
-  Generates a new variant URI from an existing packager.
-
-  ## Examples
-
-      iex> packager = HLS.Packager.new(
-      ...>   storage: HLS.Storage.File.new(),
-      ...>   manifest_uri: URI.new!("file://stream.m3u8")
-      ...> )
-      iex> HLS.Packager.new_variant_uri(packager, "video_480p")
-      URI.new!("stream_video_480p.m3u8")
-  """
-  def new_variant_uri(packager, suffix) do
+  defp new_variant_uri(packager, suffix) do
     packager.manifest_uri
     |> append_to_path("_" <> suffix)
     |> to_string()
@@ -549,19 +575,7 @@ defmodule HLS.Packager do
     |> URI.new!()
   end
 
-  @doc """
-  Generates a relative segment uri for the given playlist and segment index.
-
-  ## Examples
-
-      iex> HLS.Packager.relative_segment_uri(
-      ...>   URI.new!("file://x/stream_video_480p.m3u8"),
-      ...>   ".aac",
-      ...>   48
-      ...> )
-      URI.new!("stream_video_480p/00000/stream_video_480p_00048.aac")
-  """
-  def relative_segment_uri(playlist_uri, extname, segment_index) do
+  defp relative_segment_uri(playlist_uri, extname, segment_index) do
     root_path =
       playlist_uri
       |> to_string()
@@ -583,18 +597,7 @@ defmodule HLS.Packager do
     |> URI.new!()
   end
 
-  @doc """
-  Allows to append something to an URIs path.
-
-  ## Examples
-
-      iex> HLS.Packager.append_to_path(URI.new!("file://a.m3u8"), "_480p")
-      URI.new!("file://a_480p.m3u8")
-
-      iex> HLS.Packager.append_to_path(URI.new!("file://a/b.m3u8"), "_480p")
-      URI.new!("file://a/b_480p.m3u8")
-  """
-  def append_to_path(uri, append) do
+  defp append_to_path(uri, append) do
     field = if is_nil(uri.path), do: :host, else: :path
 
     Map.update!(uri, field, fn path ->
