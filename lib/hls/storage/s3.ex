@@ -32,11 +32,11 @@ if Code.ensure_loaded?(ReqS3) do
 
     defimpl HLS.Storage do
       def get(storage, uri, opts) do
-        max_retries = Keyword.validate(opts, max_retries: 3)
+        opts = Keyword.validate!(opts, max_retries: 3)
 
         case Req.get(storage.req,
                url: uri,
-               max_retries: max_retries
+               max_retries: opts[:max_retries]
              ) do
           {:ok, %Req.Response{status: 200, body: binary}} ->
             {:ok, binary}
@@ -53,12 +53,12 @@ if Code.ensure_loaded?(ReqS3) do
       end
 
       def put(storage, uri, binary, opts) do
-        max_retries = Keyword.validate(opts, max_retries: 3)
+        opts = Keyword.validate!(opts, max_retries: 3)
 
         case Req.put(storage.req,
                url: uri,
                body: binary,
-               max_retries: max_retries
+               max_retries: opts[:max_retries]
              ) do
           {:ok, %Req.Response{status: 200}} ->
             :ok
@@ -72,11 +72,11 @@ if Code.ensure_loaded?(ReqS3) do
       end
 
       def delete(storage, uri, opts) do
-        max_retries = Keyword.validate(opts, max_retries: 3)
+        opts = Keyword.validate!(opts, max_retries: 3)
 
         case Req.delete(storage.req,
                url: uri,
-               max_retries: max_retries
+               max_retries: opts[:max_retries]
              ) do
           {:ok, %Req.Response{status: 204}} ->
             :ok
