@@ -474,7 +474,7 @@ defmodule HLS.Packager do
 
           {id, track}
         end,
-        concurrency: map_size(state.tracks),
+        concurrency: Enum.count(state.tracks),
         ordered: false,
         timeout: :infinity
       )
@@ -618,10 +618,17 @@ defmodule HLS.Packager do
 
   defp sync_playlists(packager, sync_point) do
     tracks =
-      Map.new(packager.tracks, fn {id, track} ->
-        track = move_segments_until_sync_point(packager, track, sync_point)
-        {id, track}
-      end)
+      packager.tracks
+      |> Task.async_stream(
+        fn {id, track} ->
+          track = move_segments_until_sync_point(packager, track, sync_point)
+          {id, track}
+        end,
+        ordered: false,
+        timeout: :infinity,
+        concurrency: Enum.count(packager.tracks)
+      )
+      |> Map.new(fn {:ok, {id, track}} -> {id, track} end)
 
     Logger.debug(fn ->
       track_info =
