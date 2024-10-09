@@ -200,6 +200,14 @@ defmodule HLS.Packager do
     GenServer.cast(packager, {:sync, sync_point})
   end
 
+  @doc """
+  Returns a relative variant uri for a given track id.
+  """
+  @spec track_variant_uri(GenServer.server(), track_id()) :: URI.t()
+  def track_variant_uri(packager, track_id) do
+    GenServer.call(packager, {:track_variant_uri, track_id})
+  end
+
   # Callbacks
 
   @impl true
@@ -338,6 +346,10 @@ defmodule HLS.Packager do
   end
 
   @impl true
+  def handle_call({:track_variant_uri, track_id}, _from, state) do
+    {:reply, build_track_variant_uri(state, track_id), state}
+  end
+
   def handle_call({:has_track?, track_id}, _from, state) do
     {:reply, Map.has_key?(state.tracks, track_id), state}
   end
@@ -390,10 +402,6 @@ defmodule HLS.Packager do
         codecs: []
       ])
 
-    stream =
-      opts[:stream]
-      |> Map.put(:uri, new_variant_uri(state, track_id))
-
     cond do
       Map.has_key?(state.tracks, track_id) ->
         {:reply, {:error, :track_already_exists}, state}
@@ -402,6 +410,8 @@ defmodule HLS.Packager do
         {:reply, {:error, :master_playlist_written}, state}
 
       true ->
+        stream = Map.put(opts[:stream], :uri, build_track_variant_uri(state, track_id))
+
         media_playlist = %HLS.Playlist.Media{
           uri: stream.uri,
           target_segment_duration: opts[:target_segment_duration],
@@ -567,7 +577,7 @@ defmodule HLS.Packager do
     }
   end
 
-  defp new_variant_uri(packager, suffix) do
+  defp build_track_variant_uri(packager, suffix) do
     packager.manifest_uri
     |> append_to_path("_" <> suffix)
     |> to_string()
