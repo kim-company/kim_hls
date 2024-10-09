@@ -375,10 +375,8 @@ defmodule HLS.Packager do
         {:reply, {:error, :not_found}, state}
 
       track ->
-        duration =
-          track.duration + HLS.Playlist.Media.compute_playlist_duration(track.pending_playlist)
-
-        {:reply, {:ok, duration}, state}
+        pending_duration = HLS.Playlist.Media.compute_playlist_duration(track.pending_playlist)
+        {:reply, {:ok, track.duration + pending_duration}, state}
     end
   end
 
