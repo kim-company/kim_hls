@@ -1,17 +1,19 @@
 defmodule HLS.Segment do
   alias HLS.Playlist.Tag
 
+  @type byterange :: %{length: pos_integer(), offset: pos_integer()}
+
   @type t :: %__MODULE__{
           uri: URI.t(),
-          # Expressed in seconds.
           ref: reference(),
+          # Expressed in seconds.
           duration: float(),
           relative_sequence: pos_integer(),
           absolute_sequence: pos_integer() | nil,
           from: pos_integer() | nil,
           discontinuity: boolean(),
-          init_section: String.t() | nil,
-          byterange: %{length: pos_integer(), offset: pos_integer()} | nil
+          init_section: %{:uri => String.t(), optional(:byterange) => byterange()} | nil,
+          byterange: byterange() | nil
         }
 
   defstruct [

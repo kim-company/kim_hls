@@ -208,6 +208,62 @@ defmodule HLS.Packager do
     GenServer.call(packager, {:track_variant_uri, track_id})
   end
 
+  @doc """
+  Generates a relative segment uri for the given playlist and segment index.
+
+  ## Examples
+
+      iex> HLS.Packager.relative_segment_uri(
+      ...>   URI.new!("file://x/stream_video_480p.m3u8"),
+      ...>   ".aac",
+      ...>   48
+      ...> )
+      URI.new!("stream_video_480p/00000/stream_video_480p_00048.aac")
+  """
+  def relative_segment_uri(playlist_uri, extname, segment_index) do
+    root_path =
+      playlist_uri
+      |> to_string()
+      |> Path.basename()
+      |> String.trim_trailing(".m3u8")
+
+    {dir, suffix} =
+      segment_index
+      |> to_string()
+      |> String.pad_leading(10, "0")
+      |> String.split_at(5)
+
+    [
+      root_path,
+      dir,
+      "#{Path.basename(root_path)}_#{suffix}#{extname}"
+    ]
+    |> Path.join()
+    |> URI.new!()
+  end
+
+  @doc """
+  Allows to append something to an URIs path.
+
+  ## Examples
+
+      iex> HLS.Packager.append_to_path(URI.new!("file://a.m3u8"), "_480p")
+      URI.new!("file://a_480p.m3u8")
+
+      iex> HLS.Packager.append_to_path(URI.new!("file://a/b.m3u8"), "_480p")
+      URI.new!("file://a/b_480p.m3u8")
+  """
+  def append_to_path(uri, append) do
+    field = if is_nil(uri.path), do: :host, else: :path
+
+    Map.update!(uri, field, fn path ->
+      extname = Path.extname(path)
+      without_ext = String.trim_trailing(path, extname)
+
+      "#{without_ext}#{append}#{extname}"
+    end)
+  end
+
   # Callbacks
 
   @impl true
@@ -581,39 +637,6 @@ defmodule HLS.Packager do
     |> to_string()
     |> Path.basename()
     |> URI.new!()
-  end
-
-  defp relative_segment_uri(playlist_uri, extname, segment_index) do
-    root_path =
-      playlist_uri
-      |> to_string()
-      |> Path.basename()
-      |> String.trim_trailing(".m3u8")
-
-    {dir, suffix} =
-      segment_index
-      |> to_string()
-      |> String.pad_leading(10, "0")
-      |> String.split_at(5)
-
-    [
-      root_path,
-      dir,
-      "#{Path.basename(root_path)}_#{suffix}#{extname}"
-    ]
-    |> Path.join()
-    |> URI.new!()
-  end
-
-  defp append_to_path(uri, append) do
-    field = if is_nil(uri.path), do: :host, else: :path
-
-    Map.update!(uri, field, fn path ->
-      extname = Path.extname(path)
-      without_ext = String.trim_trailing(path, extname)
-
-      "#{without_ext}#{append}#{extname}"
-    end)
   end
 
   defp sync_playlists(packager, sync_point) do
