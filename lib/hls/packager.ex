@@ -548,6 +548,8 @@ defmodule HLS.Packager do
       )
       |> Map.new(fn {:ok, {id, track}} -> {id, track} end)
 
+    Enum.each(tracks, fn {id, track} -> measure_track_progress(id, track) end)
+
     Logger.debug(fn ->
       track_info =
         Enum.map(tracks, fn {id, track} ->
@@ -567,6 +569,26 @@ defmodule HLS.Packager do
       |> maybe_write_master(force: true)
 
     {:reply, :ok, state}
+  end
+
+  defp measure_track_progress(track_id, track) do
+    metadata = %{
+      track_id: track_id,
+      pid: self()
+    }
+
+    :telemetry.execute([:hls, :packager, :track], %{duration: round(track.duration)}, metadata)
+
+    :telemetry.execute(
+      [:hls, :packager, :track, :segment],
+      %{
+        count: track.segment_count,
+        published:
+          track.segment_count - length(track.pending_playlist.segments) -
+            length(track.upload_tasks)
+      },
+      metadata
+    )
   end
 
   @impl true
@@ -664,6 +686,8 @@ defmodule HLS.Packager do
         concurrency: Enum.count(packager.tracks)
       )
       |> Map.new(fn {:ok, {id, track}} -> {id, track} end)
+
+    Enum.each(tracks, fn {id, track} -> measure_track_progress(id, track) end)
 
     Logger.debug(fn ->
       track_info =
@@ -768,6 +792,8 @@ defmodule HLS.Packager do
       Logger.debug(fn -> "#{__MODULE__}.maybe_write_master/2 master playlist written." end)
       %{packager | master_written?: true}
     else
+      Enum.each(packager.tracks, fn {id, track} -> measure_track_progress(id, track) end)
+
       Logger.debug(fn ->
         track_info =
           Enum.map(packager.tracks, fn {id, track} ->
