@@ -98,6 +98,14 @@ defmodule HLS.Packager do
   end
 
   @doc """
+  Returns the tracks managed by the packager.
+  """
+  @spec tracks(GenServer.server()) :: %{track_id() => Track.t()}
+  def tracks(packager) do
+    GenServer.call(packager, :tracks)
+  end
+
+  @doc """
   Adds a new track to the packager.
   Tracks can only be added as long as the master playlist has not been written yet.
 
@@ -408,6 +416,10 @@ defmodule HLS.Packager do
 
   def handle_call({:has_track?, track_id}, _from, state) do
     {:reply, Map.has_key?(state.tracks, track_id), state}
+  end
+
+  def handle_call(:tracks, _from, state) do
+    {:reply, state.tracks, state}
   end
 
   def handle_call({:next_sync_point, target_duration}, _from, state) do
