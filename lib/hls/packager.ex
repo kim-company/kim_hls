@@ -514,7 +514,7 @@ defmodule HLS.Packager do
               track.pending_playlist.segments ++ Enum.map(track.upload_tasks, & &1.segment)
         }
 
-        track = %{track | pending_playlist: pending_playlist, upload_tasks: %{}}
+        track = %{track | pending_playlist: pending_playlist, upload_tasks: []}
         {id, track}
       end)
       # update playlists
