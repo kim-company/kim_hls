@@ -2,13 +2,11 @@ defmodule HLS.Playlist.Media.Tracker do
   use GenServer
 
   alias HLS.Playlist.Media
-  alias HLS.{Segment, Playlist}
+  alias HLS.{Segment, Playlist, Storage}
 
-  defstruct [:reader, :media_playlist_uri, following: %{}]
+  defstruct [:storage, :media_playlist_uri, following: %{}]
 
   @type target_t :: URI.t()
-
-  @type reader_fun :: (URI.t() -> binary())
 
   @max_initial_live_segments 3
 
@@ -18,9 +16,9 @@ defmodule HLS.Playlist.Media.Tracker do
 
   def initial_live_buffer_size(), do: @max_initial_live_segments
 
-  @spec start_link(reader_fun(), Keyword.t()) :: GenServer.on_start()
-  def start_link(reader, opts \\ []) do
-    GenServer.start_link(__MODULE__, reader, opts)
+  @spec start_link(Storage.t(), Keyword.t()) :: GenServer.on_start()
+  def start_link(storage, opts \\ []) do
+    GenServer.start_link(__MODULE__, storage, opts)
   end
 
   @spec stop(pid()) :: :ok
@@ -32,8 +30,8 @@ defmodule HLS.Playlist.Media.Tracker do
   end
 
   @impl true
-  def init(reader) do
-    {:ok, %__MODULE__{reader: reader}}
+  def init(storage) do
+    {:ok, %__MODULE__{storage: storage}}
   end
 
   @impl true
@@ -54,14 +52,14 @@ defmodule HLS.Playlist.Media.Tracker do
     handle_refresh(tracking, state)
   end
 
-  defp read_media_playlist(reader, uri) do
-    raw_playlist = reader.(uri)
+  defp read_media_playlist(storage, uri) do
+    raw_playlist = read!(storage, uri)
     Playlist.unmarshal(raw_playlist, %Media{uri: uri})
   end
 
   defp handle_refresh(tracking, state) do
     uri = tracking.target
-    playlist = read_media_playlist(state.reader, uri)
+    playlist = read_media_playlist(state.storage, uri)
     segs = Media.segments(playlist)
 
     if length(segs) < @max_initial_live_segments and !playlist.finished do
@@ -120,5 +118,13 @@ defmodule HLS.Playlist.Media.Tracker do
 
     following = Map.put(state.following, tracking.ref, tracking)
     {:noreply, %__MODULE__{state | following: following}}
+  end
+
+  defp read!(storage, uri) do
+    case Storage.get(storage, uri) do
+      {:ok, binary} -> binary
+      {:error, :not_found} -> raise RuntimeError, "Read error on #{inspect(uri)}: not found"
+      {:error, error} -> raise RuntimeError, "Read error on #{inspect(uri)}: #{inspect(error)}"
+    end
   end
 end

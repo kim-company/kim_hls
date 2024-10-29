@@ -23,9 +23,7 @@ defmodule Support.ControlledReader do
         }
       end)
 
-    fn uri ->
-      read(pid, uri)
-    end
+    %__MODULE__{pid: pid}
   end
 
   def read(pid, _) do
@@ -59,5 +57,21 @@ defmodule Support.ControlledReader do
       end
 
     Enum.join([header] ++ segs ++ [tail], "\n")
+  end
+end
+
+defimpl HLS.Storage, for: Support.ControlledReader do
+  alias Support.ControlledReader, as: Mock
+
+  def get(%Mock{pid: pid}, uri, _opts \\ []) do
+    {:ok, Mock.read(pid, uri)}
+  end
+
+  def put(_mock, _uri, _binary, _opts \\ []) do
+    raise RuntimeError, "not implemented"
+  end
+
+  def delete(_storage, _uri, _opts \\ []) do
+    raise RuntimeError, "not implemented"
   end
 end
