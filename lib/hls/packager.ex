@@ -16,13 +16,15 @@ defmodule HLS.Packager do
           storage: HLS.Storage.t(),
           manifest_uri: URI.t(),
           tracks: %{track_id() => Track.t()},
-          upload_tasks_to_track: %{Task.ref() => track_id()}
+          upload_tasks_to_track: %{Task.ref() => track_id()},
+          master_written_callback: nil | (-> term())
         }
 
   defstruct [
     :master_written?,
     :storage,
     :manifest_uri,
+    :master_written_callback,
     tracks: %{},
     upload_tasks_to_track: %{}
   ]
@@ -70,7 +72,8 @@ defmodule HLS.Packager do
     storage: HLS.Storage.File.new(),
     manifest_uri: URI.new!("file://stream.m3u8"),
     resume_finished_tracks: false,
-    restore_pending_segments: true
+    restore_pending_segments: true,
+    master_written_callback: nil
   )
   ```
   """
@@ -82,7 +85,8 @@ defmodule HLS.Packager do
         :manifest_uri,
         resume_finished_tracks: false,
         restore_pending_segments: true,
-        name: nil
+        name: nil,
+        master_written_callback: nil
       ])
 
     {server_opts, opts} = Keyword.split(opts, [:name])
@@ -287,6 +291,7 @@ defmodule HLS.Packager do
         {:ok,
          %__MODULE__{
            master_written?: true,
+           master_written_callback: opts[:master_written_callback],
            storage: storage,
            manifest_uri: manifest_uri,
            tracks: load_tracks(storage, master, load_track_opts)
@@ -296,6 +301,7 @@ defmodule HLS.Packager do
         {:ok,
          %__MODULE__{
            master_written?: false,
+           master_written_callback: opts[:master_written_callback],
            storage: storage,
            manifest_uri: manifest_uri,
            tracks: %{}
@@ -789,7 +795,10 @@ defmodule HLS.Packager do
     if opts[:force] or all_playlists_ready? or sync_point_reached? do
       master_playlist = build_master(packager)
       :ok = write_playlist(packager, master_playlist, max_retries: 10)
+      if packager.master_written_callback != nil, do: packager.master_written_callback.()
+
       Logger.debug(fn -> "#{__MODULE__}.maybe_write_master/2 master playlist written." end)
+
       %{packager | master_written?: true}
     else
       Enum.each(packager.tracks, fn {id, track} -> measure_track_progress(id, track) end)
