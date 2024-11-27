@@ -315,9 +315,10 @@ defmodule HLS.Packager do
 
   @impl true
   def handle_cast({:sync, sync_point}, state) do
-    state
-    |> sync_playlists(sync_point)
-    |> maybe_write_master(sync_point: sync_point)
+    state =
+      state
+      |> sync_playlists(sync_point)
+      |> maybe_write_master(sync_point: sync_point)
 
     {:noreply, state}
   end
