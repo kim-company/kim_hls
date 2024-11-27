@@ -516,6 +516,7 @@ defmodule HLS.Packager do
       # finish pending uploads
       |> Stream.map(fn {id, track} ->
         track.upload_tasks
+        |> Enum.reject(& &1.uploaded)
         |> Enum.map(& &1.task)
         |> Task.await_many(:infinity)
 
