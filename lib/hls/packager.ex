@@ -483,11 +483,7 @@ defmodule HLS.Packager do
         {:reply, {:error, :master_playlist_written}, state}
 
       true ->
-        stream =
-          Map.update!(opts[:stream], :uri, fn
-            nil -> build_track_variant_uri(state, track_id)
-            uri -> uri
-          end)
+        stream = Map.replace!(opts[:stream], :uri, build_track_variant_uri(state, track_id))
 
         media_playlist = %HLS.Playlist.Media{
           uri: stream.uri,
