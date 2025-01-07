@@ -1,24 +1,32 @@
-defmodule HLS.Playlist.Media.TrackerTest do
+defmodule HLS.TrackerTest do
   use ExUnit.Case
 
-  alias HLS.Playlist.Media.Tracker
+  alias HLS.Tracker
   alias HLS.Segment
   alias HLS.Storage
 
   @media_uri URI.new!("file://test/fixtures/mpeg-ts/stream_416x234.m3u8")
   @storage Storage.File.new()
 
-  describe "tracker process" do
-    test "starts and exits on demand" do
-      assert {:ok, pid} = Tracker.start_link(@storage)
-      assert Process.alive?(pid)
-      assert :ok = Tracker.stop(pid)
+  describe "tracker process livecycle" do
+    setup do
+      ref = make_ref()
+
+      pid =
+        start_link_supervised!(
+          {Tracker,
+           [
+             media_playlist_uri: @media_uri,
+             storage: @storage,
+             ref: ref,
+             owner: self()
+           ]}
+        )
+
+      %{tracker: pid, ref: ref}
     end
 
-    test "sends one message for each segment in a static track" do
-      {:ok, pid} = Tracker.start_link(@storage)
-      ref = Tracker.follow(pid, @media_uri)
-
+    test "sends one message for each segment in a static track", %{ref: ref} do
       # sequence goes from 1 to 5 as the target playlist starts with a media
       # sequence number of 1.
       Enum.each(1..5, fn seq ->
@@ -26,33 +34,32 @@ defmodule HLS.Playlist.Media.TrackerTest do
       end)
 
       refute_received {:segment, ^ref, _}, 1000
-
-      :ok = Tracker.stop(pid)
     end
 
-    #
-    test "sends start of track message identifing first sequence number" do
-      {:ok, pid} = Tracker.start_link(@storage)
-      ref = Tracker.follow(pid, @media_uri)
-
+    test "sends start of track message identifing first sequence number", %{ref: ref} do
       assert_receive {:start_of_track, ^ref, 1}, 1000
-
-      :ok = Tracker.stop(pid)
     end
 
-    test "sends track termination message when track is finished" do
-      {:ok, pid} = Tracker.start_link(@storage)
-      ref = Tracker.follow(pid, @media_uri)
-
+    test "sends track termination message when track is finished", %{ref: ref} do
       assert_receive {:end_of_track, ^ref}, 1000
-
-      :ok = Tracker.stop(pid)
     end
+  end
 
+  describe "live playlist" do
     test "Waits for the min number of HLS segments to be available before starting on a live playlist" do
-      reader = Support.ControlledReader.new(initial: 1, target_duration: 1, max: 4)
-      {:ok, pid} = Tracker.start_link(reader)
-      ref = Tracker.follow(pid, @media_uri)
+      storage = Support.ControlledReader.new(initial: 1, target_duration: 1, max: 4)
+      ref = make_ref()
+
+      _pid =
+        start_link_supervised!(
+          {Tracker,
+           [
+             media_playlist_uri: @media_uri,
+             storage: storage,
+             ref: ref,
+             owner: self()
+           ]}
+        )
 
       refute_receive {:segment, ^ref, _}, 2000
       assert_receive {:segment, ^ref, %Segment{absolute_sequence: 1}}, 100
@@ -60,14 +67,22 @@ defmodule HLS.Playlist.Media.TrackerTest do
       assert_receive {:segment, ^ref, %Segment{absolute_sequence: 3}}, 100
       assert_receive {:segment, ^ref, %Segment{absolute_sequence: 4}}, 2000
       assert_receive {:end_of_track, ^ref}, 2000
-
-      :ok = Tracker.stop(pid)
     end
 
     test "when the playlist is not finished, it does not deliver more than 3 packets at first" do
-      reader = Support.ControlledReader.new(initial: 4, target_duration: 1)
-      {:ok, pid} = Tracker.start_link(reader)
-      ref = Tracker.follow(pid, @media_uri)
+      storage = Support.ControlledReader.new(initial: 4, target_duration: 1)
+      ref = make_ref()
+
+      _pid =
+        start_link_supervised!(
+          {Tracker,
+           [
+             media_playlist_uri: @media_uri,
+             storage: storage,
+             ref: ref,
+             owner: self()
+           ]}
+        )
 
       assert_receive {:start_of_track, ^ref, 2}, 200
 
@@ -79,11 +94,6 @@ defmodule HLS.Playlist.Media.TrackerTest do
 
       refute_received {:segment, ^ref, _}, 2000
       assert_receive {:end_of_track, ^ref}, 2000
-
-      :ok = Tracker.stop(pid)
-    end
-
-    test "when playlist adds multiple segments, they are retriven in order" do
     end
   end
 end
