@@ -2,7 +2,7 @@ defmodule HLS.VariantStream do
   alias HLS.Playlist.Tag
 
   @type t :: %__MODULE__{
-          uri: URI.t(),
+          uri: nil | URI.t(),
           bandwidth: pos_integer(),
           average_bandwidth: pos_integer(),
           codecs: [String.t()],
@@ -15,9 +15,10 @@ defmodule HLS.VariantStream do
           closed_captions: Tag.group_id_t()
         }
 
-  @mandatory_keys [:uri, :bandwidth, :codecs]
+  @mandatory_keys [:bandwidth, :codecs]
   @enforce_keys @mandatory_keys
   @optional_keys [
+    :uri,
     :average_bandwidth,
     :resolution,
     :frame_rate,
