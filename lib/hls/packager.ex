@@ -585,18 +585,20 @@ defmodule HLS.Packager do
       pid: self()
     }
 
-    :telemetry.execute([:hls, :packager, :track], %{duration: round(track.duration)}, metadata)
+    if Code.ensure_loaded?(:telemetry) do
+      :telemetry.execute([:hls, :packager, :track], %{duration: round(track.duration)}, metadata)
 
-    :telemetry.execute(
-      [:hls, :packager, :track, :segment],
-      %{
-        count: track.segment_count,
-        published:
-          track.segment_count - length(track.pending_playlist.segments) -
-            length(track.upload_tasks)
-      },
-      metadata
-    )
+      :telemetry.execute(
+        [:hls, :packager, :track, :segment],
+        %{
+          count: track.segment_count,
+          published:
+            track.segment_count - length(track.pending_playlist.segments) -
+              length(track.upload_tasks)
+        },
+        metadata
+      )
+    end
   end
 
   @impl true

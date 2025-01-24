@@ -29,6 +29,7 @@ defmodule HLS.MixProject do
   defp deps do
     [
       {:req, "~> 0.5.8", optional: true},
+      {:telemetry, "~> 1.3", optional: true},
       {:ex_doc, ">= 0.0.0", only: :dev, runtime: false}
     ]
   end
