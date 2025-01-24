@@ -6,7 +6,7 @@ defmodule HLS.MixProject do
   def project do
     [
       app: :kim_hls,
-      version: "2.0.0",
+      version: "2.1.0",
       elixir: "~> 1.14",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
@@ -28,7 +28,7 @@ defmodule HLS.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:req_s3, "~> 0.2", optional: true},
+      {:req, "~> 0.5.8", optional: true},
       {:ex_doc, ">= 0.0.0", only: :dev, runtime: false}
     ]
   end
