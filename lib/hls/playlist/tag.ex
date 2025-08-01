@@ -125,11 +125,22 @@ defmodule HLS.Playlist.Tag do
   end
 
   @spec marshal(t()) :: String.t()
-  def marshal(tag), do: marshal_id(tag.id)
+  def marshal(tag), do: marshal_id(get_tag_id(tag))
 
   @spec marshal(t(), any()) :: String.t()
   def marshal(tag, value) do
-    marshal_id(tag.id) <> ":" <> to_string(value)
+    marshal_id(get_tag_id(tag)) <> ":" <> to_string(value)
+  end
+
+  # Helper function to get tag ID from either a tag module or a tag struct
+  defp get_tag_id(tag) when is_atom(tag) do
+    # It's a tag module, call the id() function
+    tag.id()
+  end
+
+  defp get_tag_id(tag) when is_struct(tag) do
+    # It's a tag struct, access the id field
+    tag.id
   end
 
   @spec capture_attribute_list!(
