@@ -17,7 +17,8 @@ defmodule HLS.Packager do
           manifest_uri: URI.t(),
           tracks: %{track_id() => Track.t()},
           upload_tasks_to_track: %{Task.ref() => track_id()},
-          master_written_callback: nil | (-> term())
+          master_written_callback: nil | (-> term()),
+          max_segments: nil | pos_integer()
         }
 
   defstruct [
@@ -25,6 +26,7 @@ defmodule HLS.Packager do
     :storage,
     :manifest_uri,
     :master_written_callback,
+    :max_segments,
     tracks: %{},
     upload_tasks_to_track: %{}
   ]
@@ -65,6 +67,11 @@ defmodule HLS.Packager do
   By default, the packager will raise an exception when trying to resume a
   finished track. This behaviour can be controlled with the `resume_finished_tracks` option.
 
+  ## Options
+
+  * `:max_segments` - Maximum number of segments to keep in each media playlist. When exceeded, 
+    old segments are removed from playlists and deleted from storage. `nil` (default) means unlimited.
+
   ## Examples
 
   ```elixir
@@ -73,7 +80,8 @@ defmodule HLS.Packager do
     manifest_uri: URI.new!("file://stream.m3u8"),
     resume_finished_tracks: false,
     restore_pending_segments: true,
-    master_written_callback: nil
+    master_written_callback: nil,
+    max_segments: 10
   )
   ```
   """
@@ -86,7 +94,8 @@ defmodule HLS.Packager do
         resume_finished_tracks: false,
         restore_pending_segments: true,
         name: nil,
-        master_written_callback: nil
+        master_written_callback: nil,
+        max_segments: nil
       ])
 
     {server_opts, opts} = Keyword.split(opts, [:name])
@@ -187,8 +196,11 @@ defmodule HLS.Packager do
   end
 
   @doc """
-  Writes down the remaining segments and marks all playlists as finished (EXT-X-ENDLIST).
-  Deletes pending playlists.
+  When `max_segments` is `nil` (default): Writes down the remaining segments and marks all 
+  playlists as finished (EXT-X-ENDLIST). Deletes pending playlists.
+
+  When `max_segments` is configured: Cleans up all segments and playlists from storage.
+  This is the expected behavior for sliding window scenarios where storage cleanup is desired.
   """
   @spec flush(GenServer.server()) :: :ok
   def flush(packager) do
@@ -294,6 +306,7 @@ defmodule HLS.Packager do
            master_written_callback: opts[:master_written_callback],
            storage: storage,
            manifest_uri: manifest_uri,
+           max_segments: opts[:max_segments],
            tracks: load_tracks(storage, master, load_track_opts)
          }}
 
@@ -304,6 +317,7 @@ defmodule HLS.Packager do
            master_written_callback: opts[:master_written_callback],
            storage: storage,
            manifest_uri: manifest_uri,
+           max_segments: opts[:max_segments],
            tracks: %{}
          }}
 
@@ -484,11 +498,12 @@ defmodule HLS.Packager do
 
       true ->
         stream = Map.replace!(opts[:stream], :uri, build_track_variant_uri(state, track_id))
+        type = if is_nil(state.max_segments), do: :event
 
         media_playlist = %HLS.Playlist.Media{
           uri: stream.uri,
           target_segment_duration: opts[:target_segment_duration],
-          type: :event
+          type: type
         }
 
         track = %Track{
@@ -507,6 +522,91 @@ defmodule HLS.Packager do
   end
 
   def handle_call(:flush, _from, state) do
+    if state.max_segments do
+      handle_flush_with_cleanup(state)
+    else
+      handle_flush_as_vod(state)
+    end
+  end
+
+  # Handles flush operation with storage cleanup for sliding window scenarios
+  defp handle_flush_with_cleanup(state) do
+    # First, finish pending uploads and collect all segments
+    tracks =
+      state.tracks
+      |> Stream.map(fn {id, track} ->
+        # Wait for pending uploads
+        track.upload_tasks
+        |> Enum.reject(& &1.uploaded)
+        |> Enum.map(& &1.task)
+        |> Task.await_many(:infinity)
+
+        # Collect all segments (media playlist + pending + upload tasks)
+        all_segments =
+          track.media_playlist.segments ++
+            track.pending_playlist.segments ++
+            Enum.map(track.upload_tasks, & &1.segment)
+
+        {id, track, all_segments}
+      end)
+      |> Enum.to_list()
+
+    # Clean up all segments from storage
+    tracks
+    |> Task.async_stream(
+      fn {id, _track, segments} ->
+        # For flush cleanup, we're deleting all segments, so no init sections should be preserved
+        cleanup_segments_from_storage(state, segments, id, nil, false)
+        {id, :cleaned}
+      end,
+      concurrency: Enum.count(state.tracks),
+      ordered: false,
+      timeout: :infinity
+    )
+    |> Stream.run()
+
+    # Delete all playlists from storage
+    tracks
+    |> Task.async_stream(
+      fn {id, track, _segments} ->
+        :ok = delete_playlist(state, track.media_playlist, max_retries: 10)
+        :ok = delete_playlist(state, track.pending_playlist, max_retries: 10)
+
+        {id, :deleted}
+      end,
+      concurrency: Enum.count(state.tracks),
+      ordered: false,
+      timeout: :infinity
+    )
+    |> Stream.run()
+
+    # Delete master playlist
+    Storage.delete(state.storage, state.manifest_uri, max_retries: 3)
+
+    Logger.debug(fn ->
+      track_info =
+        Enum.map(tracks, fn {id, _track, segments} ->
+          "#{id}: cleaned #{length(segments)} segments"
+        end)
+
+      """
+      #{__MODULE__}.flush/1 cleaned up all storage for sliding window:
+        - #{Enum.join(track_info, "\n  - ")}
+      """
+    end)
+
+    # Reset state
+    state =
+      state
+      |> Map.replace!(:tracks, %{})
+      |> Map.replace!(:upload_tasks_to_track, %{})
+      |> Map.replace!(:master_written?, false)
+
+    {:reply, :ok, state}
+  end
+
+  # Handles flush operation creating VOD playlists (original behavior)
+  defp handle_flush_as_vod(state) do
     tracks =
       state.tracks
       # finish pending uploads
@@ -730,7 +830,19 @@ defmodule HLS.Packager do
       track
       |> Map.replace!(:duration, new_duration)
       |> Map.update!(:media_playlist, fn playlist ->
-        %{playlist | segments: playlist.segments ++ moved_segments}
+        updated_playlist = %{playlist | segments: playlist.segments ++ moved_segments}
+
+        # Apply sliding window to media playlist
+        {windowed_playlist, removed_segments} =
+          apply_sliding_window(updated_playlist, packager.max_segments)
+
+        # Clean up removed segments from storage
+        if not Enum.empty?(removed_segments) do
+          track_id = uri_to_track_id(packager.manifest_uri, track.stream.uri)
+          cleanup_segments_from_storage(packager, removed_segments, track_id, windowed_playlist)
+        end
+
+        windowed_playlist
       end)
       |> Map.update!(:pending_playlist, fn playlist ->
         %{playlist | segments: remaining_segments}
@@ -1026,5 +1138,126 @@ defmodule HLS.Packager do
 
   defp update_track(packager, track_id, callback) do
     update_in(packager, [Access.key!(:tracks), track_id], callback)
+  end
+
+  # Applies sliding window logic to a playlist, removing old segments when max_segments is exceeded.
+  # Returns {updated_playlist, removed_segments}.
+  defp apply_sliding_window(playlist, max_segments) when is_nil(max_segments) do
+    {playlist, []}
+  end
+
+  defp apply_sliding_window(playlist, max_segments) do
+    segments = playlist.segments
+    segment_count = length(segments)
+
+    if segment_count > max_segments do
+      segments_to_remove = segment_count - max_segments
+      {removed_segments, remaining_segments} = Enum.split(segments, segments_to_remove)
+
+      updated_playlist = %{
+        playlist
+        | segments: remaining_segments,
+          media_sequence_number: playlist.media_sequence_number + segments_to_remove
+      }
+
+      {updated_playlist, removed_segments}
+    else
+      {playlist, []}
+    end
+  end
+
+  # Removes segments and their init sections from storage.
+  # When preserve_shared_init_sections is true, only deletes init sections that are not referenced by remaining segments.
+  # When preserve_shared_init_sections is false, deletes all init sections (used during complete cleanup).
+  defp cleanup_segments_from_storage(
+         packager,
+         segments_to_remove,
+         track_id,
+         current_media_playlist,
+         preserve_shared_init_sections \\ true
+       ) do
+    preserved_init_uris =
+      get_preserved_init_uris(current_media_playlist, preserve_shared_init_sections)
+
+    candidate_init_uris =
+      delete_segments_and_collect_init_uris(packager, segments_to_remove, track_id)
+
+    init_uris_to_delete =
+      filter_init_uris_to_delete(
+        candidate_init_uris,
+        preserved_init_uris,
+        preserve_shared_init_sections
+      )
+
+    delete_init_sections(packager, init_uris_to_delete, track_id)
+  end
+
+  # Collects init section URIs that should be preserved from deletion.
+  defp get_preserved_init_uris(media_playlist, preserve_shared_init_sections) do
+    if preserve_shared_init_sections and media_playlist do
+      media_playlist.segments
+      |> Enum.filter(& &1.init_section)
+      |> Enum.map(& &1.init_section.uri)
+      |> MapSet.new()
+    else
+      MapSet.new()
+    end
+  end
+
+  # Deletes segments from storage and returns their init section URIs.
+  defp delete_segments_and_collect_init_uris(packager, segments, track_id) do
+    segments
+    |> Enum.reduce(MapSet.new(), fn segment, acc ->
+      delete_segment_file(packager, segment, track_id)
+
+      if segment.init_section do
+        MapSet.put(acc, segment.init_section.uri)
+      else
+        acc
+      end
+    end)
+  end
+
+  # Determines which init section URIs should be deleted.
+  defp filter_init_uris_to_delete(candidate_uris, preserved_uris, preserve_shared_init_sections) do
+    if preserve_shared_init_sections do
+      MapSet.difference(candidate_uris, preserved_uris)
+    else
+      candidate_uris
+    end
+  end
+
+  # Deletes a single segment file from storage with error handling.
+  defp delete_segment_file(packager, segment, track_id) do
+    segment_uri = HLS.Playlist.Media.build_segment_uri(packager.manifest_uri, segment.uri)
+
+    case Storage.delete(packager.storage, segment_uri, max_retries: 3) do
+      :ok ->
+        :ok
+
+      {:error, error} ->
+        Logger.warning(
+          "#{__MODULE__}.cleanup_segments_from_storage Failed to delete segment #{to_string(segment.uri)} for track #{track_id}: #{inspect(error)}"
+        )
+    end
+  end
+
+  # Deletes init sections from storage with error handling and logging.
+  defp delete_init_sections(packager, init_uris, track_id) do
+    Enum.each(init_uris, fn init_uri ->
+      full_uri = HLS.Playlist.Media.build_segment_uri(packager.manifest_uri, init_uri)
+
+      case Storage.delete(packager.storage, full_uri, max_retries: 3) do
+        :ok ->
+          Logger.debug(
+            "#{__MODULE__}.cleanup_segments_from_storage Deleted orphaned init section #{to_string(init_uri)} for track #{track_id}"
+          )
+
+        {:error, error} ->
+          Logger.warning(
+            "#{__MODULE__}.cleanup_segments_from_storage Failed to delete init section #{to_string(init_uri)} for track #{track_id}: #{inspect(error)}"
+          )
+      end
+    end)
   end
 end
