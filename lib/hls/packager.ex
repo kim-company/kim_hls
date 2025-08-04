@@ -583,7 +583,7 @@ defmodule HLS.Packager do
     # Delete master playlist
     Storage.delete(state.storage, state.manifest_uri, max_retries: 3)
 
-    Logger.info(fn ->
+    Logger.debug(fn ->
       track_info =
         Enum.map(tracks, fn {id, _track, segments} ->
           "#{id}: cleaned #{length(segments)} segments"
