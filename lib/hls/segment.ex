@@ -13,7 +13,8 @@ defmodule HLS.Segment do
           from: pos_integer() | nil,
           discontinuity: boolean(),
           init_section: %{:uri => String.t(), optional(:byterange) => byterange()} | nil,
-          byterange: byterange() | nil
+          byterange: byterange() | nil,
+          program_date_time: DateTime.t() | nil
         }
 
   defstruct [
@@ -25,7 +26,8 @@ defmodule HLS.Segment do
     :ref,
     :discontinuity,
     :init_section,
-    :byterange
+    :byterange,
+    :program_date_time
   ]
 
   @spec from_tags([Tag.t()]) :: t()
@@ -56,6 +58,8 @@ defmodule HLS.Segment do
 
     init_section = Enum.find(tags, fn tag -> tag.id == :ext_x_map end)
 
+    program_date_time = Enum.find(tags, fn tag -> tag.id == :ext_x_program_date_time end)
+
     %__MODULE__{
       uri: uri.value,
       duration: duration.value,
@@ -63,7 +67,8 @@ defmodule HLS.Segment do
       ref: make_ref(),
       discontinuity: discontinuity,
       init_section: init_section && init_section.attributes,
-      byterange: byterange && byterange.attributes
+      byterange: byterange && byterange.attributes,
+      program_date_time: program_date_time && program_date_time.value
     }
   end
 

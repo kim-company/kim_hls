@@ -84,6 +84,11 @@ defimpl HLS.Playlist.Marshaler, for: HLS.Playlist.Media do
           segment.discontinuity && Tag.marshal(Tag.Discontinuity),
           segment.init_section &&
             Tag.marshal(Tag.Map, Tag.Map.marshal_uri_and_byterange(segment.init_section)),
+          segment.program_date_time &&
+            Tag.marshal(
+              Tag.ProgramDateTime,
+              Tag.ProgramDateTime.marshal_datetime(segment.program_date_time)
+            ),
           Tag.marshal(Tag.Inf, duration) <> ",",
           segment.byterange &&
             Tag.marshal(Tag.Byterange, Tag.Byterange.marshal(segment.byterange)),
@@ -142,7 +147,8 @@ defimpl HLS.Playlist.Unmarshaler, for: HLS.Playlist.Media do
       Tag.SegmentURI,
       Tag.Discontinuity,
       Tag.Byterange,
-      Tag.Map
+      Tag.Map,
+      Tag.ProgramDateTime
     ]
   end
 

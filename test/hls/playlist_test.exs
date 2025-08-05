@@ -180,6 +180,32 @@ defmodule HLS.PlaylistTest do
 
       assert Playlist.marshal(playlist) == String.replace(marshaled, " ", "", global: true)
     end
+
+    test "with program date time tags", %{playlist: playlist} do
+      {:ok, datetime1, _} = DateTime.from_iso8601("2024-08-19T12:08:16.015Z")
+      {:ok, datetime2, _} = DateTime.from_iso8601("2024-08-19T12:08:20.015Z")
+
+      # Update segments with program date time
+      segments =
+        playlist.segments
+        |> List.update_at(0, fn seg -> %{seg | program_date_time: datetime1} end)
+        |> List.update_at(1, fn seg -> %{seg | program_date_time: datetime2} end)
+
+      playlist_with_pdt = %{playlist | segments: segments, finished: true}
+
+      # Marshal and unmarshal
+      marshaled = Playlist.marshal(playlist_with_pdt)
+      unmarshaled = Playlist.unmarshal(marshaled, %Media{})
+
+      # Verify segments still have program date time
+      [first_seg, second_seg] = unmarshaled.segments
+      assert first_seg.program_date_time == datetime1
+      assert second_seg.program_date_time == datetime2
+
+      # Verify it contains the expected tags in the marshaled output
+      assert String.contains?(marshaled, "#EXT-X-PROGRAM-DATE-TIME:2024-08-19T12:08:16.015Z")
+      assert String.contains?(marshaled, "#EXT-X-PROGRAM-DATE-TIME:2024-08-19T12:08:20.015Z")
+    end
   end
 
   describe "Marshal Master Playlist" do
@@ -573,6 +599,14 @@ defmodule HLS.PlaylistTest do
       assert first.init_section == %{uri: "muxed_header_video_track_part_0.mp4"}
       assert second.init_section == %{uri: "muxed_header_video_track_part_0.mp4"}
       assert third.init_section == %{uri: "muxed_header_video_track_part_1.mp4"}
+
+      # Test program date time parsing
+      {:ok, expected_first_datetime, _} = DateTime.from_iso8601("2024-08-19T12:08:16.015Z")
+      {:ok, expected_second_datetime, _} = DateTime.from_iso8601("2024-08-19T12:08:16.781Z")
+
+      assert first.program_date_time == expected_first_datetime
+      assert second.program_date_time == expected_second_datetime
+      assert third.program_date_time == nil
     end
 
     test "recognizes byteranges in EXT-X-MAP and EXT-X-BYTERANGE tags" do
