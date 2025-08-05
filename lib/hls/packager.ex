@@ -840,7 +840,7 @@ defmodule HLS.Packager do
     updated_segments
   end
 
-  defp move_segments_until_sync_point(packager, track, sync_point, sync_datetime \\ nil) do
+  defp move_segments_until_sync_point(packager, track, sync_point, sync_datetime) do
     {moved_segments, remaining_segments, new_duration} =
       split_segments_at_sync_point(
         track.pending_playlist.segments,
