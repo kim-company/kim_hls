@@ -784,11 +784,13 @@ defmodule HLS.Packager do
   end
 
   defp sync_playlists(packager, sync_point) do
+    sync_datetime = if packager.max_segments, do: DateTime.utc_now()
+
     tracks =
       packager.tracks
       |> Task.async_stream(
         fn {id, track} ->
-          track = move_segments_until_sync_point(packager, track, sync_point)
+          track = move_segments_until_sync_point(packager, track, sync_point, sync_datetime)
           {id, track}
         end,
         ordered: false,
@@ -818,7 +820,27 @@ defmodule HLS.Packager do
     %{packager | tracks: tracks}
   end
 
-  defp move_segments_until_sync_point(packager, track, sync_point) do
+  # Assigns program date times to segments based on their position in the timeline.
+  # Calculates wall-clock time for when each segment's media content began.
+  defp assign_program_date_times(segments, sync_datetime) do
+    # Calculate when the first moved segment started based on sync point timing
+    total_moved_duration = Enum.reduce(segments, 0.0, fn seg, acc -> acc + seg.duration end)
+
+    first_segment_start_time =
+      DateTime.add(sync_datetime, -trunc(total_moved_duration * 1000), :millisecond)
+
+    # Assign program date time to each segment based on its accumulated position
+    {updated_segments, _acc_time} =
+      Enum.map_reduce(segments, first_segment_start_time, fn segment, acc_datetime ->
+        updated_segment = %{segment | program_date_time: acc_datetime}
+        next_datetime = DateTime.add(acc_datetime, trunc(segment.duration * 1000), :millisecond)
+        {updated_segment, next_datetime}
+      end)
+
+    updated_segments
+  end
+
+  defp move_segments_until_sync_point(packager, track, sync_point, sync_datetime \\ nil) do
     {moved_segments, remaining_segments, new_duration} =
       split_segments_at_sync_point(
         track.pending_playlist.segments,
@@ -826,11 +848,19 @@ defmodule HLS.Packager do
         track.duration
       )
 
+    # Assign program date times to moved segments if sync_datetime is provided
+    final_moved_segments =
+      if sync_datetime && not Enum.empty?(moved_segments) do
+        assign_program_date_times(moved_segments, sync_datetime)
+      else
+        moved_segments
+      end
+
     track =
       track
       |> Map.replace!(:duration, new_duration)
       |> Map.update!(:media_playlist, fn playlist ->
-        updated_playlist = %{playlist | segments: playlist.segments ++ moved_segments}
+        updated_playlist = %{playlist | segments: playlist.segments ++ final_moved_segments}
 
         # Apply sliding window to media playlist
         {windowed_playlist, removed_segments} =
@@ -848,7 +878,7 @@ defmodule HLS.Packager do
         %{playlist | segments: remaining_segments}
       end)
 
-    if Enum.any?(moved_segments) do
+    if Enum.any?(final_moved_segments) do
       write_playlist(packager, track.media_playlist)
       write_playlist(packager, track.pending_playlist)
     end

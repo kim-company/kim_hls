@@ -289,5 +289,137 @@ defmodule HLS.PackagerTest do
       assert File.exists?(init_section_path),
              "Shared init section should not be deleted at #{init_section_path}"
     end
+
+    test "assigns program date times to segments when max_segments is configured", %{
+      storage: storage,
+      manifest_uri: manifest_uri
+    } do
+      max_segments = 3
+
+      {:ok, packager} =
+        Packager.start_link(
+          storage: storage,
+          manifest_uri: manifest_uri,
+          max_segments: max_segments
+        )
+
+      # Add a track
+      :ok =
+        Packager.add_track(packager, "test_track",
+          stream: %VariantStream{
+            uri: URI.new!("test_track.m3u8"),
+            bandwidth: 1000,
+            codecs: ["avc1.64001e"]
+          },
+          segment_extension: ".ts",
+          target_segment_duration: 2
+        )
+
+      # Add segments with specific durations
+      segment_durations = [2.0, 1.5, 2.5, 1.0]
+
+      for {duration, i} <- Enum.with_index(segment_durations, 1) do
+        :ok = Packager.put_segment(packager, "test_track", "segment_#{i}_data", duration)
+      end
+
+      # Wait for uploads to complete
+      :timer.sleep(200)
+
+      # Capture sync time and force sync to move segments to media playlist
+      sync_start_time = DateTime.utc_now()
+      :ok = Packager.sync(packager, 100)
+      sync_end_time = DateTime.utc_now()
+
+      # Get tracks and verify program date times were assigned
+      tracks = Packager.tracks(packager)
+      track = tracks["test_track"]
+
+      # All segments should have program_date_time assigned
+      segments_with_datetime =
+        track.media_playlist.segments
+        |> Enum.filter(&(&1.program_date_time != nil))
+
+      assert length(segments_with_datetime) == length(track.media_playlist.segments),
+             "All segments in sliding window mode should have program_date_time assigned"
+
+      # Program date times should be in ascending order
+      datetimes = Enum.map(track.media_playlist.segments, & &1.program_date_time)
+      sorted_datetimes = Enum.sort(datetimes, DateTime)
+      assert datetimes == sorted_datetimes, "Program date times should be chronologically ordered"
+
+      # The time difference between consecutive segments should match their durations
+      datetime_pairs = Enum.zip(datetimes, tl(datetimes))
+      duration_pairs = Enum.zip(track.media_playlist.segments, tl(track.media_playlist.segments))
+
+      for {{dt1, dt2}, {seg1, _seg2}} <- Enum.zip(datetime_pairs, duration_pairs) do
+        expected_diff_ms = trunc(seg1.duration * 1000)
+        actual_diff_ms = DateTime.diff(dt2, dt1, :millisecond)
+
+        # Allow small margin for rounding
+        assert abs(actual_diff_ms - expected_diff_ms) <= 1,
+               "Time difference between segments should match segment duration. Expected: #{expected_diff_ms}ms, Actual: #{actual_diff_ms}ms"
+      end
+
+      # All program date times should be reasonable (between sync start and end, accounting for segment history)
+      total_segment_duration = Enum.sum(segment_durations)
+
+      earliest_expected =
+        DateTime.add(sync_start_time, -trunc(total_segment_duration * 1000), :millisecond)
+
+      latest_expected = sync_end_time
+
+      for segment <- track.media_playlist.segments do
+        assert DateTime.compare(segment.program_date_time, earliest_expected) != :lt,
+               "Program date time should not be earlier than calculated start time"
+
+        assert DateTime.compare(segment.program_date_time, latest_expected) != :gt,
+               "Program date time should not be later than sync end time"
+      end
+    end
+
+    test "does not assign program date times when max_segments is nil", %{
+      storage: storage,
+      manifest_uri: manifest_uri
+    } do
+      {:ok, packager} =
+        Packager.start_link(
+          storage: storage,
+          manifest_uri: manifest_uri
+          # max_segments: nil (default)
+        )
+
+      # Add a track  
+      :ok =
+        Packager.add_track(packager, "test_track",
+          stream: %VariantStream{
+            uri: URI.new!("test_track.m3u8"),
+            bandwidth: 1000,
+            codecs: ["avc1.64001e"]
+          },
+          segment_extension: ".ts",
+          target_segment_duration: 2
+        )
+
+      # Add some segments
+      for i <- 1..3 do
+        :ok = Packager.put_segment(packager, "test_track", "segment_#{i}_data", 2.0)
+      end
+
+      # Wait for uploads and sync
+      :timer.sleep(200)
+      :ok = Packager.sync(packager, 100)
+
+      # Get tracks and verify no program date times were assigned
+      tracks = Packager.tracks(packager)
+      track = tracks["test_track"]
+
+      # No segments should have program_date_time when max_segments is nil
+      segments_with_datetime =
+        track.media_playlist.segments
+        |> Enum.filter(&(&1.program_date_time != nil))
+
+      assert length(segments_with_datetime) == 0,
+             "No segments should have program_date_time when max_segments is nil"
+    end
   end
 end
