@@ -308,7 +308,9 @@ defmodule HLS.Packager do
     case Storage.get(storage, manifest_uri, max_retries: 5) do
       {:ok, data} ->
         master = HLS.Playlist.unmarshal(data, %HLS.Playlist.Master{uri: opts[:manifest_uri]})
-        load_track_opts = Keyword.take(opts, [:resume_finished_tracks, :restore_pending_segments])
+
+        load_track_opts =
+          Keyword.take(opts, [:resume_finished_tracks, :restore_pending_segments, :max_segments])
 
         {:ok,
          %__MODULE__{
@@ -986,6 +988,7 @@ defmodule HLS.Packager do
     resume_finished_tracks = Keyword.fetch!(opts, :resume_finished_tracks)
     restore_pending_segments = Keyword.fetch!(opts, :restore_pending_segments)
     streams = Enum.concat(master.streams, master.alternative_renditions)
+    playlist_type = if is_nil(opts[:max_segments]), do: :event
 
     streams
     |> Stream.map(fn stream ->
@@ -1033,7 +1036,7 @@ defmodule HLS.Packager do
               media =
                 media
                 |> Map.replace!(:finished, false)
-                |> Map.replace!(:type, :event)
+                |> Map.replace!(:type, playlist_type)
 
               %{track | media_playlist: media}
 
@@ -1063,12 +1066,12 @@ defmodule HLS.Packager do
             data
             |> HLS.Playlist.unmarshal(%HLS.Playlist.Media{uri: pending_uri})
             |> Map.replace!(:finished, false)
-            |> Map.replace!(:type, :event)
+            |> Map.replace!(:type, playlist_type)
           else
             _error ->
               %HLS.Playlist.Media{
                 uri: pending_uri,
-                type: :event,
+                type: playlist_type,
                 target_segment_duration: track.media_playlist.target_segment_duration,
                 version: track.media_playlist.version
               }
