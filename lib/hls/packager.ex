@@ -1207,7 +1207,8 @@ defmodule HLS.Packager do
       {removed_segments, remaining_segments} = Enum.split(segments, segments_to_remove)
 
       # Count discontinuities in removed segments to update discontinuity_sequence
-      removed_discontinuities = Enum.count(removed_segments, fn segment -> segment.discontinuity end)
+      removed_discontinuities =
+        Enum.count(removed_segments, fn segment -> segment.discontinuity end)
 
       updated_playlist = %{
         playlist
