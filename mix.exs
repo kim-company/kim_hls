@@ -6,7 +6,7 @@ defmodule HLS.MixProject do
   def project do
     [
       app: :kim_hls,
-      version: "2.4.2",
+      version: "2.4.3",
       elixir: "~> 1.14",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
