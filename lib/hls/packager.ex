@@ -408,9 +408,8 @@ defmodule HLS.Packager do
         discontinuity: track.discontinue_next_segment
       }
 
-    # TODO: Task.Supervisor.async_nolink?
     task =
-      Task.async(fn ->
+      Task.Supervisor.async_nolink(HLS.Task.Supervisor, fn ->
         :ok =
           Storage.put(
             state.storage,
@@ -742,7 +741,7 @@ defmodule HLS.Packager do
   def handle_info({:DOWN, ref, _, _, reason}, state)
       when is_map_key(state.upload_tasks_to_track, ref) do
     # TODO: Maybe we should write the segment in the playlist and just continue as nothing has happened?
-    raise "Cannot write segment of track #{state.track_id} with reason: #{inspect(reason)}."
+    raise "Cannot write segment with reason: #{inspect(reason)}."
   end
 
   defp build_master(packager) do
@@ -793,7 +792,7 @@ defmodule HLS.Packager do
 
     tracks =
       packager.tracks
-      |> Task.async_stream(
+      |> async_stream_nolink(
         fn {id, track} ->
           track = move_segments_until_sync_point(packager, track, sync_point, sync_datetime)
           {id, track}
@@ -988,7 +987,7 @@ defmodule HLS.Packager do
       }
     end)
     # Load media playlist
-    |> Task.async_stream(
+    |> async_stream_nolink(
       fn track ->
         result =
           Storage.get(
@@ -1040,7 +1039,7 @@ defmodule HLS.Packager do
       end
     end)
     # Load pending playlist
-    |> Task.async_stream(
+    |> async_stream_nolink(
       fn track ->
         pending_uri = to_pending_uri(track.stream.uri)
 
@@ -1069,7 +1068,7 @@ defmodule HLS.Packager do
       ordered: false
     )
     # Initializes the rest
-    |> Task.async_stream(
+    |> async_stream_nolink(
       fn {:ok, track} ->
         all_segments =
           track.media_playlist.segments
@@ -1296,5 +1295,9 @@ defmodule HLS.Packager do
           )
       end
     end)
+  end
+
+  defp async_stream_nolink(enum, fun, opts) do
+    Task.Supervisor.async_stream_nolink(HLS.Task.Supervisor, enum, fun, opts)
   end
 end
