@@ -820,16 +820,14 @@ defmodule HLS.Packager do
 
     Enum.each(tracks, fn {id, track} -> measure_track_progress(id, track) end)
 
-    counts = Enum.map(tracks, fn {_, %{segment_count: x}} -> x end)
-    diff = Enum.max(counts) - Enum.min(counts)
+    count = Enum.map(tracks, fn {_, track} -> media_playlist_segment_count(track) end)
+    diff = Enum.max(count) - Enum.min(count)
     log_level = if(diff < 2, do: :debug, else: :warning)
 
     Logger.log(log_level, fn ->
       track_info =
         Enum.map(tracks, fn {id, track} ->
-          media_playlist_segments =
-            track.segment_count - length(track.pending_playlist.segments) -
-              length(track.upload_tasks)
+          media_playlist_segments = media_playlist_segment_count(track)
 
           "#{id}: #{media_playlist_segments}/#{track.segment_count} segment published (#{Float.round(track.duration, 2)}s)"
         end)
@@ -841,6 +839,11 @@ defmodule HLS.Packager do
     end)
 
     %{packager | tracks: tracks}
+  end
+
+  defp media_playlist_segment_count(track) do
+    track.segment_count - length(track.pending_playlist.segments) -
+      length(track.upload_tasks)
   end
 
   # Assigns program date times to segments based on their position in the timeline.
