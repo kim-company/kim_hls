@@ -118,6 +118,7 @@ defmodule HLS.PlaylistTest do
       #EXT-X-VERSION:7
       #EXT-X-TARGETDURATION:3
       #EXT-X-MEDIA-SEQUENCE:0
+      #EXT-X-DISCONTINUITY-SEQUENCE:0
       #EXTINF:3.0,
       data/0.ts
       #EXT-X-DISCONTINUITY
@@ -129,6 +130,25 @@ defmodule HLS.PlaylistTest do
 
       playlist = %Media{playlist | segments: [first, %{second | discontinuity: true}]}
       assert Playlist.marshal(playlist) == String.replace(marshaled, " ", "", global: true)
+    end
+
+    test "with EXT-X-DISCONTINUITY-SEQUENCE" do
+      marshaled = """
+      #EXTM3U
+      #EXT-X-VERSION:7
+      #EXT-X-TARGETDURATION:3
+      #EXT-X-MEDIA-SEQUENCE:0
+      #EXT-X-DISCONTINUITY-SEQUENCE:5
+      #EXTINF:3.0,
+      data/0.ts
+      #EXT-X-DISCONTINUITY
+      #EXTINF:2.0,
+      data/1.ts
+      """
+
+      playlist = Playlist.unmarshal(marshaled, %Media{uri: URI.new!("file://media.m3u8")})
+      assert playlist.discontinuity_sequence == 5
+      assert Enum.at(playlist.segments, 1).discontinuity == true
     end
 
     test "with EXT-X-MAP tags", %{playlist: playlist} do

@@ -11,6 +11,9 @@ defmodule HLS.Playlist.Media do
           # not all segments are listed in the playlist.
           # https://www.rfc-editor.org/rfc/# rfc8216#section-4.3.3.2
           media_sequence_number: pos_integer(),
+          # allows synchronization of Renditions with discontinuity tags
+          # https://www.rfc-editor.org/rfc/rfc8216#section-4.3.3.7
+          discontinuity_sequence: non_neg_integer(),
           uri: URI.t() | nil,
           # Indicates that the playlist has become VOD.
           finished: boolean(),
@@ -24,6 +27,7 @@ defmodule HLS.Playlist.Media do
     finished: false,
     type: nil,
     media_sequence_number: 0,
+    discontinuity_sequence: 0,
     version: 7,
     segments: []
   ]
@@ -116,8 +120,12 @@ defimpl HLS.Playlist.Marshaler, for: HLS.Playlist.Media do
         version: version,
         target_segment_duration: target_segment_duration,
         media_sequence_number: media_sequence_number,
-        type: type
+        discontinuity_sequence: discontinuity_sequence,
+        type: type,
+        segments: segments
       }) do
+    has_discontinuities = Enum.any?(segments, fn segment -> segment.discontinuity end)
+    
     [
       {Tag.Version, version},
       if(type == nil,
@@ -125,7 +133,11 @@ defimpl HLS.Playlist.Marshaler, for: HLS.Playlist.Media do
         else: {Tag.PlaylistType, Tag.PlaylistType.marshal_playlist_type(type)}
       ),
       {Tag.TargetSegmentDuration, trunc(target_segment_duration)},
-      {Tag.MediaSequenceNumber, media_sequence_number}
+      {Tag.MediaSequenceNumber, media_sequence_number},
+      if(discontinuity_sequence > 0 or has_discontinuities,
+        do: {Tag.DiscontinuitySequence, discontinuity_sequence},
+        else: nil
+      )
     ]
     |> Enum.reject(fn x -> x == nil end)
   end
@@ -142,6 +154,7 @@ defimpl HLS.Playlist.Unmarshaler, for: HLS.Playlist.Media do
       Tag.PlaylistType,
       Tag.TargetSegmentDuration,
       Tag.MediaSequenceNumber,
+      Tag.DiscontinuitySequence,
       Tag.EndList,
       Tag.Inf,
       Tag.SegmentURI,
@@ -157,6 +170,12 @@ defimpl HLS.Playlist.Unmarshaler, for: HLS.Playlist.Media do
     [version] = Map.get(tags, Tag.Version.id(), [%{value: 1}])
     [segment_duration] = Map.fetch!(tags, Tag.TargetSegmentDuration.id())
     [sequence_number] = Map.fetch!(tags, Tag.MediaSequenceNumber.id())
+
+    discontinuity_sequence =
+      case Map.get(tags, Tag.DiscontinuitySequence.id(), nil) do
+        nil -> 0
+        [discontinuity_seq] -> discontinuity_seq.value
+      end
 
     finished? = Map.has_key?(tags, Tag.EndList.id())
 
@@ -197,6 +216,7 @@ defimpl HLS.Playlist.Unmarshaler, for: HLS.Playlist.Media do
       | version: version.value,
         target_segment_duration: segment_duration.value,
         media_sequence_number: sequence_number.value,
+        discontinuity_sequence: discontinuity_sequence,
         finished: finished?,
         type: type,
         segments: segments
