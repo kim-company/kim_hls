@@ -1093,10 +1093,12 @@ defmodule HLS.Packager do
             %{uri: last_segment.init_section.uri, payload: payload}
           end
 
+        segment_count = length(all_segments) + track.media_playlist.media_sequence_number
+
         %{
           track
           | segment_extension: segment_extension,
-            segment_count: length(all_segments),
+            segment_count: segment_count,
             init_section: init_section,
             duration: HLS.Playlist.Media.compute_playlist_duration(track.media_playlist)
         }
