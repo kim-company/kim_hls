@@ -119,6 +119,15 @@ defmodule HLS.Packager do
   end
 
   @doc """
+  Returns true if the packager is configured to produce a live playlist with the
+  sliding window feature enabled.
+  """
+  @spec sliding_window_enabled?(GenServer.server()) :: boolean()
+  def sliding_window_enabled?(packager) do
+    GenServer.call(packager, :is_sliding_window)
+  end
+
+  @doc """
   Adds a new track to the packager.
   Tracks can only be added as long as the master playlist has not been written yet.
 
@@ -435,6 +444,10 @@ defmodule HLS.Packager do
   end
 
   @impl true
+  def handle_call(:is_sliding_window, _from, state) do
+    {:reply, state.max_segments != nil, state}
+  end
+
   def handle_call({:track_variant_uri, track_id}, _from, state) do
     {:reply, build_track_variant_uri(state, track_id), state}
   end
