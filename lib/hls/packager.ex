@@ -151,6 +151,7 @@ defmodule HLS.Packager do
 
   @doc """
   Will force that the next added segment has an `EXT-X-DISCONTINUITY` tag.
+  It is applied only in case max_segments is not nil.
   """
   @spec discontinue_track(GenServer.server(), track_id()) :: :ok
   def discontinue_track(packager, track_id) do
@@ -334,6 +335,10 @@ defmodule HLS.Packager do
       |> sync_playlists(sync_point)
       |> maybe_write_master(sync_point: sync_point)
 
+    {:noreply, state}
+  end
+
+  def handle_cast({:discontinue_track, _track_id}, state = %{max_segments: nil}) do
     {:noreply, state}
   end
 
