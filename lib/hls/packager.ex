@@ -2,7 +2,10 @@ defmodule HLS.Packager do
   @moduledoc """
   The `HLS.Packager` module is responsible for managing and generating media and master playlists
   for HTTP Live Streaming (HLS). It handles various tasks such as loading and saving playlists,
-  inserting new streams, uploading segments and maintaining synchronization points for different streams.
+  inserting new streams, uploading segments and maintaining index-based synchronization for different streams.
+
+  Synchronization is now index-based rather than time-based, ensuring consistent behavior across
+  audio and video tracks regardless of exact segment durations.
   """
 
   use GenServer
@@ -218,20 +221,21 @@ defmodule HLS.Packager do
   end
 
   @doc """
-  Returns the next synchronization point which
+  Returns the next synchronization index which
   can then be passed to the `sync/2` function.
   """
-  @spec next_sync_point(GenServer.server(), pos_integer()) :: pos_integer()
-  def next_sync_point(packager, target_duration) do
-    GenServer.call(packager, {:next_sync_point, target_duration})
+  @spec next_sync_point(GenServer.server()) :: pos_integer()
+  def next_sync_point(packager) do
+    GenServer.call(packager, :next_sync_point)
   end
 
   @doc """
-  Synchronizes all media playlists and writes down the master playlist as soon as needed.
+  Synchronizes all media playlists up to the specified segment index and writes down the master playlist as soon as needed.
+  For example, `sync(packager, 100)` ensures all tracks have at least 100 segments in their media playlists.
   """
   @spec sync(GenServer.server(), pos_integer()) :: :ok
-  def sync(packager, sync_point) do
-    GenServer.cast(packager, {:sync, sync_point})
+  def sync(packager, sync_index) do
+    GenServer.cast(packager, {:sync, sync_index})
   end
 
   @doc """
@@ -462,19 +466,15 @@ defmodule HLS.Packager do
     {:reply, state.tracks, state}
   end
 
-  def handle_call({:next_sync_point, target_duration}, _from, state) do
-    max_duration =
+  def handle_call(:next_sync_point, _from, state) do
+    max_segments =
       state.tracks
-      |> Enum.map(fn {_id, track} -> track.duration end)
+      |> Enum.map(fn {_id, track} -> media_playlist_segment_count(track) end)
       |> Enum.max(fn -> 0 end)
 
-    sync_point =
-      max(
-        ceil(max_duration / target_duration) * target_duration,
-        target_duration
-      )
+    sync_index = max_segments + 1
 
-    {:reply, sync_point, state}
+    {:reply, sync_index, state}
   end
 
   def handle_call({:track_duration, track_id}, _from, state) do
@@ -867,12 +867,16 @@ defmodule HLS.Packager do
   end
 
   defp move_segments_until_sync_point(packager, track, sync_point, sync_datetime) do
-    {moved_segments, remaining_segments, new_duration} =
+    current_media_playlist_count = media_playlist_segment_count(track)
+
+    {moved_segments, remaining_segments, moved_duration} =
       split_segments_at_sync_point(
         track.pending_playlist.segments,
         sync_point,
-        track.duration
+        current_media_playlist_count
       )
+
+    new_duration = track.duration + moved_duration
 
     # Assign program date times to moved segments if sync_datetime is provided
     final_moved_segments =
@@ -912,30 +916,14 @@ defmodule HLS.Packager do
     track
   end
 
-  defp split_segments_at_sync_point(
-         pending_segments,
-         sync_point,
-         acc_duration,
-         moved_segs \\ []
-       )
+  defp split_segments_at_sync_point(pending_segments, sync_point, current_media_playlist_count) do
+    segments_to_move = max(0, sync_point - current_media_playlist_count)
 
-  defp split_segments_at_sync_point([], _sync_point, acc_duration, moved_segs) do
-    {Enum.reverse(moved_segs), [], acc_duration}
-  end
+    {moved_segments, remaining_segments} = Enum.split(pending_segments, segments_to_move)
 
-  defp split_segments_at_sync_point([segment | rest], sync_point, acc_duration, moved_segs) do
-    new_duration = acc_duration + segment.duration
+    moved_duration = Enum.reduce(moved_segments, 0.0, fn seg, acc -> acc + seg.duration end)
 
-    if new_duration <= sync_point do
-      split_segments_at_sync_point(
-        rest,
-        sync_point,
-        new_duration,
-        [segment | moved_segs]
-      )
-    else
-      {Enum.reverse(moved_segs), [segment | rest], acc_duration}
-    end
+    {moved_segments, remaining_segments, moved_duration}
   end
 
   defp maybe_write_master(packager, _opts) when packager.master_written? do
@@ -947,21 +935,16 @@ defmodule HLS.Packager do
 
     sync_point_reached? =
       if opts[:sync_point] do
-        max_target_duration =
-          packager.tracks
-          |> Enum.map(fn {_id, track} ->
-            track.media_playlist.target_segment_duration
-          end)
-          |> Enum.max()
-
-        opts[:sync_point] >= max_target_duration * 3
+        packager.tracks
+        |> Enum.map(fn {_id, track} -> media_playlist_segment_count(track) end)
+        |> Enum.all?(fn segment_count -> segment_count >= opts[:sync_point] end)
       else
         false
       end
 
     all_playlists_ready? =
       Enum.all?(packager.tracks, fn {_id, track} ->
-        track.duration >= track.media_playlist.target_segment_duration * 3
+        media_playlist_segment_count(track) >= 3
       end)
 
     if opts[:force] or all_playlists_ready? or sync_point_reached? do

@@ -59,7 +59,7 @@ defmodule HLS.PackagerTest do
       :timer.sleep(200)
 
       # Force sync with a large sync point to move all segments to media playlist
-      :ok = Packager.sync(packager, 100)
+      :ok = Packager.sync(packager, 10)
 
       # Verify sliding window was applied
       tracks = Packager.tracks(packager)
@@ -258,7 +258,7 @@ defmodule HLS.PackagerTest do
       :timer.sleep(300)
 
       # Force sync to trigger sliding window
-      :ok = Packager.sync(packager, 100)
+      :ok = Packager.sync(packager, 10)
 
       # Verify sliding window was applied
       tracks_after = Packager.tracks(packager)
@@ -327,7 +327,7 @@ defmodule HLS.PackagerTest do
 
       # Capture sync time and force sync to move segments to media playlist
       sync_start_time = DateTime.utc_now()
-      :ok = Packager.sync(packager, 100)
+      :ok = Packager.sync(packager, 10)
       sync_end_time = DateTime.utc_now()
 
       # Get tracks and verify program date times were assigned
@@ -407,7 +407,7 @@ defmodule HLS.PackagerTest do
 
       # Wait for uploads and sync
       :timer.sleep(200)
-      :ok = Packager.sync(packager, 100)
+      :ok = Packager.sync(packager, 10)
 
       # Get tracks and verify no program date times were assigned
       tracks = Packager.tracks(packager)
