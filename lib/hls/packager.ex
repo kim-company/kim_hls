@@ -162,12 +162,13 @@ defmodule HLS.Packager do
   end
 
   @doc """
-  Will force that the next added segment has an `EXT-X-DISCONTINUITY` tag.
+  Will force that the next added segment has an `EXT-X-DISCONTINUITY` tag for ALL tracks.
   It is applied only in case max_segments is not nil.
+  According to HLS specification, discontinuity markers should be synchronized across all tracks.
   """
-  @spec discontinue_track(GenServer.server(), track_id()) :: :ok
-  def discontinue_track(packager, track_id) do
-    GenServer.cast(packager, {:discontinue_track, track_id})
+  @spec discontinue(GenServer.server()) :: :ok
+  def discontinue(packager) do
+    GenServer.cast(packager, :discontinue)
   end
 
   @doc """
@@ -353,17 +354,17 @@ defmodule HLS.Packager do
     {:noreply, state}
   end
 
-  def handle_cast({:discontinue_track, _track_id}, state = %{max_segments: nil}) do
+  def handle_cast(:discontinue, state = %{max_segments: nil}) do
     {:noreply, state}
   end
 
-  def handle_cast({:discontinue_track, track_id}, state) do
-    {:noreply,
-     update_track(
-       state,
-       track_id,
-       fn track -> %{track | discontinue_next_segment: true} end
-     )}
+  def handle_cast(:discontinue, state) do
+    updated_tracks =
+      Enum.into(state.tracks, %{}, fn {track_id, track} ->
+        {track_id, %{track | discontinue_next_segment: true}}
+      end)
+
+    {:noreply, %{state | tracks: updated_tracks}}
   end
 
   def handle_cast({:put_init_section, track_id, payload}, state) do
