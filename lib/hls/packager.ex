@@ -804,7 +804,7 @@ defmodule HLS.Packager do
   end
 
   defp sync_playlists(packager, sync_point) do
-    sync_datetime = if packager.max_segments, do: DateTime.utc_now()
+    sync_datetime = if packager.max_segments, do: DateTime.utc_now(:millisecond)
 
     tracks =
       packager.tracks
@@ -854,7 +854,7 @@ defmodule HLS.Packager do
     total_moved_duration = Enum.reduce(segments, 0.0, fn seg, acc -> acc + seg.duration end)
 
     first_segment_start_time =
-      DateTime.add(sync_datetime, -trunc(total_moved_duration * 1000), :millisecond)
+      DateTime.add(sync_datetime, trunc(total_moved_duration * -1000), :millisecond)
 
     # Assign program date time to each segment based on its accumulated position
     {updated_segments, _acc_time} =
