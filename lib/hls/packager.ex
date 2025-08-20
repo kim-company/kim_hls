@@ -934,21 +934,7 @@ defmodule HLS.Packager do
   defp maybe_write_master(packager, opts) do
     opts = Keyword.validate!(opts, force: false, sync_point: nil)
 
-    sync_point_reached? =
-      if opts[:sync_point] do
-        packager.tracks
-        |> Enum.map(fn {_id, track} -> media_playlist_segment_count(track) end)
-        |> Enum.all?(fn segment_count -> segment_count >= opts[:sync_point] end)
-      else
-        false
-      end
-
-    all_playlists_ready? =
-      Enum.all?(packager.tracks, fn {_id, track} ->
-        media_playlist_segment_count(track) >= 3
-      end)
-
-    if opts[:force] or all_playlists_ready? or sync_point_reached? do
+    if opts[:force] or opts[:sync_point] >= 3 do
       master_playlist = build_master(packager)
       :ok = write_playlist(packager, master_playlist, max_retries: 10)
       if packager.master_written_callback != nil, do: packager.master_written_callback.()
