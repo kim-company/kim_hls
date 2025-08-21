@@ -325,10 +325,8 @@ defmodule HLS.PackagerTest do
       # Wait for uploads to complete
       :timer.sleep(200)
 
-      # Capture sync time and force sync to move segments to media playlist
-      sync_start_time = DateTime.utc_now()
+      # Force sync to move segments to media playlist
       :ok = Packager.sync(packager, 10)
-      sync_end_time = DateTime.utc_now()
 
       # Get tracks and verify program date times were assigned
       tracks = Packager.tracks(packager)
@@ -360,20 +358,15 @@ defmodule HLS.PackagerTest do
                "Time difference between segments should match segment duration. Expected: #{expected_diff_ms}ms, Actual: #{actual_diff_ms}ms"
       end
 
-      # All program date times should be reasonable (between sync start and end, accounting for segment history)
-      total_segment_duration = Enum.sum(segment_durations)
-
-      earliest_expected =
-        DateTime.add(sync_start_time, -trunc(total_segment_duration * 1000), :millisecond)
-
-      latest_expected = sync_end_time
+      # All program date times should be reasonable - they should be close to current time
+      current_time = DateTime.utc_now()
 
       for segment <- track.media_playlist.segments do
-        assert DateTime.compare(segment.program_date_time, earliest_expected) != :lt,
-               "Program date time should not be earlier than calculated start time"
+        # Program date times should be within a reasonable range (allowing for test execution time and clock variance)
+        time_diff_seconds = DateTime.diff(segment.program_date_time, current_time, :second)
 
-        assert DateTime.compare(segment.program_date_time, latest_expected) != :gt,
-               "Program date time should not be later than sync end time"
+        assert abs(time_diff_seconds) <= 10,
+               "Program date time should be close to current time. Diff: #{time_diff_seconds}s"
       end
     end
 

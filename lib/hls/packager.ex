@@ -21,7 +21,9 @@ defmodule HLS.Packager do
           tracks: %{track_id() => Track.t()},
           upload_tasks_to_track: %{Task.ref() => track_id()},
           master_written_callback: nil | (-> term()),
-          max_segments: nil | pos_integer()
+          max_segments: nil | pos_integer(),
+          # RFC-compliant: Common timeline reference point for all tracks
+          timeline_reference: DateTime.t()
         }
 
   defstruct [
@@ -30,6 +32,7 @@ defmodule HLS.Packager do
     :manifest_uri,
     :master_written_callback,
     :max_segments,
+    :timeline_reference,
     tracks: %{},
     upload_tasks_to_track: %{}
   ]
@@ -45,7 +48,9 @@ defmodule HLS.Packager do
             pending_playlist: HLS.Playlist.Media.t(),
             discontinue_next_segment: boolean(),
             codecs: [String.t()],
-            upload_tasks: [%{ref: reference(), segment: HLS.Segment.t(), uploaded: boolean()}]
+            upload_tasks: [%{ref: reference(), segment: HLS.Segment.t(), uploaded: boolean()}],
+            # RFC-compliant: next datetime for program date time assignment (track-level timeline)
+            next_sync_datetime: nil | DateTime.t()
           }
 
     @enforce_keys [
@@ -61,7 +66,8 @@ defmodule HLS.Packager do
     defstruct [
                 discontinue_next_segment: false,
                 upload_tasks: [],
-                codecs: []
+                codecs: [],
+                next_sync_datetime: nil
               ] ++ @enforce_keys
   end
 
@@ -309,6 +315,8 @@ defmodule HLS.Packager do
   def init(opts) do
     manifest_uri = opts[:manifest_uri]
     storage = opts[:storage]
+    # RFC-compliant: Establish common timeline reference for all tracks
+    timeline_reference = DateTime.utc_now(:millisecond)
 
     case Storage.get(storage, manifest_uri, max_retries: 5) do
       {:ok, data} ->
@@ -316,6 +324,7 @@ defmodule HLS.Packager do
 
         load_track_opts =
           Keyword.take(opts, [:resume_finished_tracks, :restore_pending_segments, :max_segments])
+          |> Keyword.put(:timeline_reference, timeline_reference)
 
         {:ok,
          %__MODULE__{
@@ -324,6 +333,7 @@ defmodule HLS.Packager do
            storage: storage,
            manifest_uri: manifest_uri,
            max_segments: opts[:max_segments],
+           timeline_reference: timeline_reference,
            tracks: load_tracks(storage, master, load_track_opts)
          }}
 
@@ -335,6 +345,7 @@ defmodule HLS.Packager do
            storage: storage,
            manifest_uri: manifest_uri,
            max_segments: opts[:max_segments],
+           timeline_reference: timeline_reference,
            tracks: %{}
          }}
 
@@ -419,7 +430,7 @@ defmodule HLS.Packager do
     segment =
       %HLS.Segment{
         uri: segment_uri,
-        duration: duration,
+        duration: Float.round(duration, 3),
         init_section: init_section,
         discontinuity: track.discontinue_next_segment
       }
@@ -444,6 +455,14 @@ defmodule HLS.Packager do
         |> Map.replace!(:discontinue_next_segment, false)
         |> Map.update!(:upload_tasks, fn tasks ->
           tasks ++ [%{task: task, segment: segment, uploaded: false}]
+        end)
+        |> then(fn track ->
+          # RFC-compliant: Reset timeline at discontinuity boundaries
+          if segment.discontinuity do
+            %{track | next_sync_datetime: state.timeline_reference}
+          else
+            track
+          end
         end)
       end)
 
@@ -534,7 +553,9 @@ defmodule HLS.Packager do
           media_playlist: media_playlist,
           segment_extension: opts[:segment_extension],
           pending_playlist: %{media_playlist | uri: to_pending_uri(stream.uri)},
-          codecs: opts[:codecs]
+          codecs: opts[:codecs],
+          # RFC-compliant: Initialize track timeline from packager's reference point
+          next_sync_datetime: state.timeline_reference
         }
 
         {:reply, :ok, put_in(state, [Access.key!(:tracks), track_id], track)}
@@ -804,13 +825,11 @@ defmodule HLS.Packager do
   end
 
   defp sync_playlists(packager, sync_point) do
-    sync_datetime = if packager.max_segments, do: DateTime.utc_now(:millisecond)
-
     tracks =
       packager.tracks
       |> async_stream_nolink(
         fn {id, track} ->
-          track = move_segments_until_sync_point(packager, track, sync_point, sync_datetime)
+          track = move_segments_until_sync_point(packager, track, sync_point)
           {id, track}
         end,
         ordered: false,
@@ -847,27 +866,20 @@ defmodule HLS.Packager do
       length(track.upload_tasks)
   end
 
-  # Assigns program date times to segments based on their position in the timeline.
-  # Calculates wall-clock time for when each segment's media content began.
-  defp assign_program_date_times(segments, sync_datetime) do
-    # Calculate when the first moved segment started based on sync point timing
-    total_moved_duration = Enum.reduce(segments, 0.0, fn seg, acc -> acc + seg.duration end)
+  defp assign_datetime(segments, track) do
+    Enum.map_reduce(segments, track, fn segment, track ->
+      segment = put_in(segment, [Access.key!(:program_date_time)], track.next_sync_datetime)
 
-    first_segment_start_time =
-      DateTime.add(sync_datetime, trunc(total_moved_duration * -1000), :millisecond)
+      track =
+        update_in(track, [Access.key!(:next_sync_datetime)], fn current_time ->
+          DateTime.add(current_time, trunc(segment.duration * 1000), :millisecond)
+        end)
 
-    # Assign program date time to each segment based on its accumulated position
-    {updated_segments, _acc_time} =
-      Enum.map_reduce(segments, first_segment_start_time, fn segment, acc_datetime ->
-        updated_segment = %{segment | program_date_time: acc_datetime}
-        next_datetime = DateTime.add(acc_datetime, trunc(segment.duration * 1000), :millisecond)
-        {updated_segment, next_datetime}
-      end)
-
-    updated_segments
+      {segment, track}
+    end)
   end
 
-  defp move_segments_until_sync_point(packager, track, sync_point, sync_datetime) do
+  defp move_segments_until_sync_point(packager, track, sync_point) do
     current_media_playlist_count = media_playlist_segment_count(track)
 
     {moved_segments, remaining_segments, moved_duration} =
@@ -879,19 +891,20 @@ defmodule HLS.Packager do
 
     new_duration = track.duration + moved_duration
 
-    # Assign program date times to moved segments if sync_datetime is provided
-    final_moved_segments =
-      if sync_datetime && not Enum.empty?(moved_segments) do
-        assign_program_date_times(moved_segments, sync_datetime)
+    # RFC-compliant: Assign program date times using track-level timeline
+    # Only assign when sliding window (max_segments) is enabled, matching original behavior
+    {moved_segments, track} =
+      if packager.max_segments && not Enum.empty?(moved_segments) do
+        assign_datetime(moved_segments, track)
       else
-        moved_segments
+        {moved_segments, track}
       end
 
     track =
       track
       |> Map.replace!(:duration, new_duration)
       |> Map.update!(:media_playlist, fn playlist ->
-        updated_playlist = %{playlist | segments: playlist.segments ++ final_moved_segments}
+        updated_playlist = %{playlist | segments: playlist.segments ++ moved_segments}
 
         # Apply sliding window to media playlist
         {windowed_playlist, removed_segments} =
@@ -909,7 +922,7 @@ defmodule HLS.Packager do
         %{playlist | segments: remaining_segments}
       end)
 
-    if Enum.any?(final_moved_segments) do
+    if Enum.any?(moved_segments) do
       write_playlist(packager, track.media_playlist)
       write_playlist(packager, track.pending_playlist)
     end
@@ -1097,7 +1110,8 @@ defmodule HLS.Packager do
           | segment_extension: segment_extension,
             segment_count: segment_count,
             init_section: init_section,
-            duration: HLS.Playlist.Media.compute_playlist_duration(track.media_playlist)
+            duration: HLS.Playlist.Media.compute_playlist_duration(track.media_playlist),
+            next_sync_datetime: opts[:timeline_reference]
         }
       end,
       concurrency: length(streams),
