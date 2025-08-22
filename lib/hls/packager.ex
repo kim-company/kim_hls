@@ -952,7 +952,7 @@ defmodule HLS.Packager do
       :ok = write_playlist(packager, master_playlist, max_retries: 10)
       if packager.master_written_callback != nil, do: packager.master_written_callback.()
 
-      Logger.debug(fn -> "#{__MODULE__}.maybe_write_master/2 master playlist written." end)
+      Logger.info(fn -> "#{__MODULE__}.maybe_write_master/2 master playlist written." end)
 
       %{packager | master_written?: true}
     else
