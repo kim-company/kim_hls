@@ -872,7 +872,7 @@ defmodule HLS.Packager do
 
       track =
         update_in(track, [Access.key!(:next_sync_datetime)], fn current_time ->
-          DateTime.add(current_time, trunc(segment.duration * 1000), :millisecond)
+          DateTime.add(current_time, round(segment.duration), :second)
         end)
 
       {segment, track}
