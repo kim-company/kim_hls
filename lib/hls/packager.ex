@@ -430,7 +430,7 @@ defmodule HLS.Packager do
     segment =
       %HLS.Segment{
         uri: segment_uri,
-        duration: Float.round(duration, 3),
+        duration: Float.round(duration, 5),
         init_section: init_section,
         discontinuity: track.discontinue_next_segment
       }
