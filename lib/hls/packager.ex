@@ -841,8 +841,7 @@ defmodule HLS.Packager do
     Enum.each(tracks, fn {id, track} -> measure_track_progress(id, track) end)
 
     count = Enum.map(tracks, fn {_, track} -> media_playlist_segment_count(track) end)
-    diff = Enum.max(count) - Enum.min(count)
-    log_level = if(diff < 2, do: :debug, else: :warning)
+    log_level = if Enum.any?(count, &(&1 < sync_point)), do: :warning, else: :debug
 
     Logger.log(log_level, fn ->
       track_info =
