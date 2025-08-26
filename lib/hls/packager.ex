@@ -1000,13 +1000,26 @@ defmodule HLS.Packager do
     end
   end
 
-  # Synchronizes out-of-sync tracks by trimming to the minimum segment count
+  # Synchronizes out-of-sync tracks using recovery (trim) or reset strategy
   defp fix_out_of_sync_tracks(tracks, storage, master, _opts) do
-    # Find the minimum segment count across all tracks
+    # Check if all tracks have the same media_sequence_number (same timeline)
+    media_sequences = Enum.map(tracks, fn {_id, track} -> track.media_playlist.media_sequence_number end)
+    same_timeline = Enum.uniq(media_sequences) |> length() == 1
+    
+    if same_timeline do
+      # RECOVERY: All tracks on same timeline, can safely trim segments
+      recover_by_trimming_segments(tracks, storage, master)
+    else
+      # RESET: Tracks on different timelines, need complete reset
+      reset_to_aligned_position(tracks, storage, master)
+    end
+  end
+
+  # Recovery strategy: trim segments while maintaining same media_sequence_number
+  defp recover_by_trimming_segments(tracks, storage, master) do
     segment_counts = Enum.map(tracks, fn {_id, track} -> track.segment_count end)
     min_segments = Enum.min(segment_counts)
     
-    # Log what's happening
     track_info = 
       tracks
       |> Enum.map(fn {id, track} -> 
@@ -1017,13 +1030,12 @@ defmodule HLS.Packager do
     
     Logger.warning(fn ->
       """
-      #{__MODULE__}.fix_tracks/4 detected out-of-sync playlists, synchronizing to #{min_segments} segments:
+      #{__MODULE__}.fix_tracks/4 using RECOVERY strategy (same timeline), trimming to #{min_segments} segments:
         #{track_info}
-      Note: Content will be lost during this synchronization operation.
+      Note: Some content will be lost during this synchronization operation.
       """
     end)
 
-    # Trim each track to the minimum segment count
     tracks
     |> Enum.map(fn {track_id, track} ->
       if track.segment_count > min_segments do
@@ -1031,6 +1043,39 @@ defmodule HLS.Packager do
       else
         {track_id, track}
       end
+    end)
+    |> Map.new()
+  end
+
+  # Reset strategy: align all tracks to furthest logical position with empty playlists
+  defp reset_to_aligned_position(tracks, storage, master) do
+    # Find the furthest logical position across all tracks
+    max_position = 
+      tracks
+      |> Enum.map(fn {_id, track} -> 
+        track.media_playlist.media_sequence_number + length(track.media_playlist.segments)
+      end)
+      |> Enum.max()
+    
+    track_info = 
+      tracks
+      |> Enum.map(fn {id, track} -> 
+        current_position = track.media_playlist.media_sequence_number + length(track.media_playlist.segments)
+        "#{id}: position #{current_position} -> #{max_position} (seq: #{track.media_playlist.media_sequence_number}->#{max_position})"
+      end)
+      |> Enum.join(", ")
+    
+    Logger.warning(fn ->
+      """
+      #{__MODULE__}.fix_tracks/4 using RESET strategy (different timelines), aligning to position #{max_position}:
+        #{track_info}
+      Note: All playlist content will be cleared for complete synchronization recovery.
+      """
+    end)
+
+    tracks
+    |> Enum.map(fn {track_id, track} ->
+      reset_track_to_position(track, track_id, max_position, storage, master)
     end)
     |> Map.new()
   end
@@ -1058,10 +1103,13 @@ defmodule HLS.Packager do
     new_discontinuity_sequence = 
       track.media_playlist.discontinuity_sequence + removed_discontinuities
 
+    # Calculate the final segment count after trimming
+    final_segment_count = target_count
+    
     # Update the track
     updated_track = %{
       track
-      | segment_count: target_count,
+      | segment_count: final_segment_count,
         duration: new_duration,
         media_playlist: %{
           track.media_playlist
@@ -1098,6 +1146,53 @@ defmodule HLS.Packager do
       track_id,
       updated_track.media_playlist
     )
+
+    {track_id, updated_track}
+  end
+
+  # Resets a single track to the specified logical position with empty playlist
+  defp reset_track_to_position(track, track_id, target_position, storage, master) do
+    # Clean up all existing segments from storage
+    cleanup_segments_from_storage(
+      %{storage: storage, manifest_uri: master.uri},
+      track.media_playlist.segments,
+      track_id,
+      nil,  # no preserved playlist since we're clearing everything
+      false # don't preserve any init sections 
+    )
+
+    # Create updated track with reset playlist
+    updated_track = %{
+      track
+      | segment_count: target_position,
+        duration: 0.0,
+        media_playlist: %{
+          track.media_playlist
+          | segments: [],
+            media_sequence_number: target_position,
+            discontinuity_sequence: 0
+        }
+    }
+
+    # Write the empty playlist to storage
+    playlist_uri = HLS.Playlist.build_absolute_uri(master.uri, track.media_playlist.uri)
+    
+    case Storage.put(
+           storage,
+           playlist_uri,
+           HLS.Playlist.marshal(updated_track.media_playlist),
+           max_retries: 10
+         ) do
+      :ok ->
+        Logger.debug(fn ->
+          "#{__MODULE__}.reset_track_to_position/5 reset track #{track_id} to position #{target_position} with empty playlist"
+        end)
+
+      {:error, error} ->
+        Logger.warning(
+          "#{__MODULE__}.reset_track_to_position/5 Failed to write reset playlist for track #{track_id}: #{inspect(error)}"
+        )
+    end
 
     {track_id, updated_track}
   end

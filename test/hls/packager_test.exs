@@ -559,5 +559,130 @@ defmodule HLS.PackagerTest do
       assert track1.duration == expected_track1_duration, "track1 duration should be updated"
       assert track2.duration == expected_track2_duration, "track2 duration should be correct"
     end
+
+    test "fix_tracks synchronizes playlists with different media_sequence_number values", %{
+      storage: storage,
+      manifest_uri: manifest_uri,
+      temp_dir: temp_dir
+    } do
+      max_segments = 3
+
+      # Create master playlist
+      master_content = """
+      #EXTM3U
+      #EXT-X-VERSION:4
+      #EXT-X-INDEPENDENT-SEGMENTS
+      #EXT-X-STREAM-INF:BANDWIDTH=1000000,CODECS="avc1.64001e",RESOLUTION=640x360
+      stream_track1.m3u8
+      #EXT-X-STREAM-INF:BANDWIDTH=500000,CODECS="avc1.64001e",RESOLUTION=416x234
+      stream_track2.m3u8
+      """
+
+      master_path = Path.join(temp_dir, "stream.m3u8")
+      File.write!(master_path, master_content)
+
+      # Create track1 playlist: far ahead with media_sequence_number: 10, only 2 segments
+      # segment_count = length(segments) + media_sequence_number = 2 + 10 = 12
+      track1_content = """
+      #EXTM3U
+      #EXT-X-VERSION:7
+      #EXT-X-TARGETDURATION:2
+      #EXT-X-MEDIA-SEQUENCE:10
+      #EXTINF:2.0,
+      stream_track1/00000/stream_track1_00011.ts
+      #EXTINF:2.0,
+      stream_track1/00000/stream_track1_00012.ts
+      """
+
+      track1_path = Path.join(temp_dir, "stream_track1.m3u8")
+      File.write!(track1_path, track1_content)
+
+      # Create track2 playlist: behind with media_sequence_number: 0, 5 segments  
+      # segment_count = length(segments) + media_sequence_number = 5 + 0 = 5
+      track2_content = """
+      #EXTM3U
+      #EXT-X-VERSION:7
+      #EXT-X-TARGETDURATION:2
+      #EXT-X-MEDIA-SEQUENCE:0
+      #EXTINF:2.0,
+      stream_track2/00000/stream_track2_00001.ts
+      #EXTINF:2.0,
+      stream_track2/00000/stream_track2_00002.ts
+      #EXTINF:2.0,
+      stream_track2/00000/stream_track2_00003.ts
+      #EXTINF:2.0,
+      stream_track2/00000/stream_track2_00004.ts
+      #EXTINF:2.0,
+      stream_track2/00000/stream_track2_00005.ts
+      """
+
+      track2_path = Path.join(temp_dir, "stream_track2.m3u8")
+      File.write!(track2_path, track2_content)
+
+      # Create segment files for all referenced segments
+      for track <- ["track1", "track2"] do
+        range = if track == "track1", do: 11..12, else: 1..5
+
+        for i <- range do
+          segment_dir = Path.join(temp_dir, "stream_#{track}/00000")
+          File.mkdir_p!(segment_dir)
+
+          segment_path =
+            Path.join(segment_dir, "stream_#{track}_#{"#{i}" |> String.pad_leading(5, "0")}.ts")
+
+          File.write!(segment_path, "fake_segment_data_#{track}_#{i}")
+        end
+      end
+
+      # Start packager - should trigger fix_tracks due to different segment_counts
+      {:ok, packager} =
+        Packager.start_link(
+          storage: storage,
+          manifest_uri: manifest_uri,
+          max_segments: max_segments,
+          resume_finished_tracks: true
+        )
+
+      # Get tracks to verify synchronization
+      tracks = Packager.tracks(packager)
+      track1 = tracks["track1"]
+      track2 = tracks["track2"]
+
+      assert track1 != nil, "track1 should exist"
+      assert track2 != nil, "track2 should exist"
+
+      # Since media_sequence_numbers differ (10 vs 0), this is a RESET case, not recovery
+      # The fix should align both tracks to the furthest logical position
+      # track1: media_sequence=10 + 2 segments = position 12
+      # track2: media_sequence=0 + 5 segments = position 5
+      # → Both should be reset to position 12
+
+      # Both tracks should be aligned to the same logical position (12)
+      assert track1.segment_count == 12, "track1 should have segment_count 12"
+      assert track2.segment_count == 12, "track2 should have segment_count 12"
+      assert track1.segment_count == track2.segment_count, "tracks should be synchronized"
+
+      # Both tracks should have the same media_sequence_number (furthest position)
+      assert track1.media_playlist.media_sequence_number == 12,
+             "track1 should have media_sequence 12"
+
+      assert track2.media_playlist.media_sequence_number == 12,
+             "track2 should have media_sequence 12"
+
+      # Both tracks should have empty playlists (reset for clean synchronization)
+      assert length(track1.media_playlist.segments) == 0,
+             "track1 should have empty playlist (reset)"
+
+      assert length(track2.media_playlist.segments) == 0,
+             "track2 should have empty playlist (reset)"
+
+      # Both tracks should have zero duration (fresh start)
+      assert track1.duration == 0.0, "track1 duration should be 0"
+      assert track2.duration == 0.0, "track2 duration should be 0"
+
+      # This represents a reset scenario where tracks had different media_sequence_numbers
+      # indicating they were on different logical timelines. Complete reset ensures 
+      # both tracks are now ready to receive segments from the same synchronized position.
+    end
   end
 end
