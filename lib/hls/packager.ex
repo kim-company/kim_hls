@@ -766,7 +766,7 @@ defmodule HLS.Packager do
           | segments: track.pending_playlist.segments ++ finished_segments
         }
 
-        write_playlist(state, pending_playlist)
+        maybe_write_pending_playlist(state, pending_playlist)
 
         %{track | upload_tasks: unfinished, pending_playlist: pending_playlist}
       end)
@@ -923,7 +923,7 @@ defmodule HLS.Packager do
 
     if Enum.any?(moved_segments) do
       write_playlist(packager, track.media_playlist)
-      write_playlist(packager, track.pending_playlist)
+      maybe_write_pending_playlist(packager, track.pending_playlist)
     end
 
     track
@@ -1124,6 +1124,14 @@ defmodule HLS.Packager do
   end
 
   defp to_pending_uri(uri), do: append_to_path(uri, "_pending")
+
+  defp maybe_write_pending_playlist(state, playlist, opts \\ []) do
+    if state.max_segments != nil do
+      :ok
+    else
+      write_playlist(state, playlist, opts)
+    end
+  end
 
   defp write_playlist(packager, playlist, storage_opts \\ []) do
     case Storage.put(
