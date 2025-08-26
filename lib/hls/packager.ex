@@ -853,7 +853,7 @@ defmodule HLS.Packager do
         end)
 
       """
-      #{__MODULE__}.sync/2 synchronized tracks:
+      #{__MODULE__}.sync/2 synchronized tracks to #{sync_point}:
         - #{Enum.join(track_info, "\n  - ")}
       """
     end)
