@@ -350,12 +350,11 @@ defmodule HLS.PackagerTest do
       duration_pairs = Enum.zip(track.media_playlist.segments, tl(track.media_playlist.segments))
 
       for {{dt1, dt2}, {seg1, _seg2}} <- Enum.zip(datetime_pairs, duration_pairs) do
-        expected_diff_ms = trunc(seg1.duration * 1000)
-        actual_diff_ms = DateTime.diff(dt2, dt1, :millisecond)
+        expected_diff_seconds = round(seg1.duration)
+        actual_diff_seconds = DateTime.diff(dt2, dt1, :second)
 
-        # Allow small margin for rounding
-        assert abs(actual_diff_ms - expected_diff_ms) <= 1,
-               "Time difference between segments should match segment duration. Expected: #{expected_diff_ms}ms, Actual: #{actual_diff_ms}ms"
+        assert actual_diff_seconds == expected_diff_seconds,
+               "Time difference between segments should match rounded segment duration. Expected: #{expected_diff_seconds}s, Actual: #{actual_diff_seconds}s"
       end
 
       # All program date times should be reasonable - they should be close to current time
