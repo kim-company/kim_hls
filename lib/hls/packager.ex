@@ -334,7 +334,7 @@ defmodule HLS.Packager do
            manifest_uri: manifest_uri,
            max_segments: opts[:max_segments],
            timeline_reference: timeline_reference,
-           tracks: load_tracks(storage, master, load_track_opts)
+           tracks: load_and_fix_tracks(storage, master, load_track_opts)
          }}
 
       {:error, :not_found} ->
@@ -971,6 +971,135 @@ defmodule HLS.Packager do
 
       packager
     end
+  end
+
+  defp load_and_fix_tracks(storage, master, opts) do
+    storage
+    |> load_tracks(master, opts)
+    |> fix_tracks(storage, master, opts)
+  end
+
+  defp fix_tracks(tracks, storage, master, opts) do
+    max_segments = opts[:max_segments]
+    
+    all_synced? =
+      tracks
+      |> Enum.map(fn {_id, t} -> t.segment_count end)
+      |> Enum.uniq()
+      |> then(fn x -> length(x) == 1 end)
+
+    if all_synced? do
+      tracks
+    else
+      # Only fix tracks for sliding window livestreams (max_segments != nil)
+      if max_segments != nil do
+        fix_out_of_sync_tracks(tracks, storage, master, opts)
+      else
+        tracks
+      end
+    end
+  end
+
+  # Synchronizes out-of-sync tracks by trimming to the minimum segment count
+  defp fix_out_of_sync_tracks(tracks, storage, master, _opts) do
+    # Find the minimum segment count across all tracks
+    segment_counts = Enum.map(tracks, fn {_id, track} -> track.segment_count end)
+    min_segments = Enum.min(segment_counts)
+    
+    # Log what's happening
+    track_info = 
+      tracks
+      |> Enum.map(fn {id, track} -> 
+        segments_to_trim = track.segment_count - min_segments
+        "#{id}: #{track.segment_count} -> #{min_segments} (trimming #{segments_to_trim})"
+      end)
+      |> Enum.join(", ")
+    
+    Logger.warning(fn ->
+      """
+      #{__MODULE__}.fix_tracks/4 detected out-of-sync playlists, synchronizing to #{min_segments} segments:
+        #{track_info}
+      Note: Content will be lost during this synchronization operation.
+      """
+    end)
+
+    # Trim each track to the minimum segment count
+    tracks
+    |> Enum.map(fn {track_id, track} ->
+      if track.segment_count > min_segments do
+        trim_track_to_segment_count(track, track_id, min_segments, storage, master)
+      else
+        {track_id, track}
+      end
+    end)
+    |> Map.new()
+  end
+
+  # Trims a single track to the specified segment count
+  defp trim_track_to_segment_count(track, track_id, target_count, storage, master) do
+    segments_to_remove = track.segment_count - target_count
+    
+    # Split segments to keep the most recent ones
+    {segments_to_trim, remaining_segments} = 
+      Enum.split(track.media_playlist.segments, segments_to_remove)
+    
+    # Calculate new duration based on remaining segments
+    new_duration = 
+      remaining_segments
+      |> Enum.reduce(0.0, fn segment, acc -> acc + segment.duration end)
+    
+    # Update media sequence number to reflect removed segments
+    new_media_sequence = track.media_playlist.media_sequence_number + segments_to_remove
+    
+    # Count discontinuities in removed segments to update discontinuity_sequence  
+    removed_discontinuities = 
+      Enum.count(segments_to_trim, fn segment -> segment.discontinuity end)
+    
+    new_discontinuity_sequence = 
+      track.media_playlist.discontinuity_sequence + removed_discontinuities
+
+    # Update the track
+    updated_track = %{
+      track
+      | segment_count: target_count,
+        duration: new_duration,
+        media_playlist: %{
+          track.media_playlist
+          | segments: remaining_segments,
+            media_sequence_number: new_media_sequence,
+            discontinuity_sequence: new_discontinuity_sequence
+        }
+    }
+
+    # Write the updated playlist to storage
+    playlist_uri = HLS.Playlist.build_absolute_uri(master.uri, track.media_playlist.uri)
+    
+    case Storage.put(
+           storage,
+           playlist_uri,
+           HLS.Playlist.marshal(updated_track.media_playlist),
+           max_retries: 10
+         ) do
+      :ok ->
+        Logger.debug(fn ->
+          "#{__MODULE__}.trim_track_to_segment_count/5 updated playlist for track #{track_id} (#{segments_to_remove} segments trimmed)"
+        end)
+
+      {:error, error} ->
+        Logger.warning(
+          "#{__MODULE__}.trim_track_to_segment_count/5 Failed to write updated playlist for track #{track_id}: #{inspect(error)}"
+        )
+    end
+
+    # Clean up the trimmed segments from storage
+    cleanup_segments_from_storage(
+      %{storage: storage, manifest_uri: master.uri},
+      segments_to_trim,
+      track_id,
+      updated_track.media_playlist
+    )
+
+    {track_id, updated_track}
   end
 
   defp load_tracks(storage, master, opts) do

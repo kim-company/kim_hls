@@ -413,5 +413,151 @@ defmodule HLS.PackagerTest do
       assert length(segments_with_datetime) == 0,
              "No segments should have program_date_time when max_segments is nil"
     end
+
+    test "fix_tracks synchronizes out-of-sync playlists on packager restart", %{
+      storage: storage,
+      manifest_uri: manifest_uri,
+      temp_dir: temp_dir
+    } do
+      max_segments = 3
+
+      # First, create out-of-sync playlists by manually setting up storage files
+      # This simulates a scenario where tracks got out-of-sync due to different segment production rates
+
+      # Create master playlist
+      master_content = """
+      #EXTM3U
+      #EXT-X-VERSION:4
+      #EXT-X-INDEPENDENT-SEGMENTS
+      #EXT-X-STREAM-INF:BANDWIDTH=1000000,CODECS="avc1.64001e",RESOLUTION=640x360
+      stream_track1.m3u8
+      #EXT-X-STREAM-INF:BANDWIDTH=500000,CODECS="avc1.64001e",RESOLUTION=416x234
+      stream_track2.m3u8
+      """
+
+      master_path = Path.join(temp_dir, "stream.m3u8")
+      File.write!(master_path, master_content)
+
+      # Create track1 playlist with 5 segments (ahead)
+      track1_content = """
+      #EXTM3U
+      #EXT-X-VERSION:7
+      #EXT-X-TARGETDURATION:2
+      #EXT-X-MEDIA-SEQUENCE:0
+      #EXTINF:2.0,
+      stream_track1/00000/stream_track1_00001.ts
+      #EXTINF:2.0,
+      stream_track1/00000/stream_track1_00002.ts
+      #EXTINF:2.0,
+      stream_track1/00000/stream_track1_00003.ts
+      #EXTINF:2.0,
+      stream_track1/00000/stream_track1_00004.ts
+      #EXTINF:2.0,
+      stream_track1/00000/stream_track1_00005.ts
+      """
+
+      track1_path = Path.join(temp_dir, "stream_track1.m3u8")
+      File.write!(track1_path, track1_content)
+
+      # Create track2 playlist with 3 segments (behind)
+      track2_content = """
+      #EXTM3U
+      #EXT-X-VERSION:7
+      #EXT-X-TARGETDURATION:2
+      #EXT-X-MEDIA-SEQUENCE:0
+      #EXTINF:2.0,
+      stream_track2/00000/stream_track2_00001.ts
+      #EXTINF:2.0,
+      stream_track2/00000/stream_track2_00002.ts
+      #EXTINF:2.0,
+      stream_track2/00000/stream_track2_00003.ts
+      """
+
+      track2_path = Path.join(temp_dir, "stream_track2.m3u8")
+      File.write!(track2_path, track2_content)
+
+      # Create the actual segment files that the playlists reference
+      for track <- ["track1", "track2"] do
+        for i <- 1..5 do
+          segment_dir = Path.join(temp_dir, "stream_#{track}/00000")
+          File.mkdir_p!(segment_dir)
+
+          segment_path =
+            Path.join(segment_dir, "stream_#{track}_#{"#{i}" |> String.pad_leading(5, "0")}.ts")
+
+          File.write!(segment_path, "fake_segment_data_#{track}_#{i}")
+        end
+      end
+
+      # Now restart the packager with max_segments configured, which should trigger fix_tracks
+      {:ok, packager} =
+        Packager.start_link(
+          storage: storage,
+          manifest_uri: manifest_uri,
+          max_segments: max_segments,
+          resume_finished_tracks: true
+        )
+
+      # Get the tracks to verify current state
+      tracks = Packager.tracks(packager)
+
+      # Before the fix is implemented, the tracks will be out of sync
+      # track1 should have 5 segments, track2 should have 3 segments
+      track1 = tracks["track1"]
+      track2 = tracks["track2"]
+
+      assert track1 != nil, "track1 should exist"
+      assert track2 != nil, "track2 should exist"
+
+      # Verify the fix worked correctly
+      # 1. Both tracks should have the same segment count (synchronized to minimum = 3)
+      assert track1.segment_count == 3, "track1 should be trimmed to 3 segments"
+      assert track2.segment_count == 3, "track2 should keep its 3 segments"
+      assert track1.segment_count == track2.segment_count, "tracks should be synchronized"
+
+      # 2. Media sequence numbers should reflect removed segments
+      assert track1.media_playlist.media_sequence_number == 2,
+             "track1 should have sequence 2 (removed first 2)"
+
+      assert track2.media_playlist.media_sequence_number == 0, "track2 should keep sequence 0"
+
+      # 3. Verify remaining segments in track1 are the last 3 (segments 3, 4, 5)
+      track1_segment_uris = Enum.map(track1.media_playlist.segments, &to_string(&1.uri))
+
+      assert Enum.any?(track1_segment_uris, &String.contains?(&1, "00003")),
+             "track1 should contain segment 3"
+
+      assert Enum.any?(track1_segment_uris, &String.contains?(&1, "00004")),
+             "track1 should contain segment 4"
+
+      assert Enum.any?(track1_segment_uris, &String.contains?(&1, "00005")),
+             "track1 should contain segment 5"
+
+      refute Enum.any?(track1_segment_uris, &String.contains?(&1, "00001")),
+             "track1 should not contain segment 1 (trimmed)"
+
+      refute Enum.any?(track1_segment_uris, &String.contains?(&1, "00002")),
+             "track1 should not contain segment 2 (trimmed)"
+
+      # 4. Track2 should keep all its original segments (1, 2, 3)
+      track2_segment_uris = Enum.map(track2.media_playlist.segments, &to_string(&1.uri))
+
+      assert Enum.any?(track2_segment_uris, &String.contains?(&1, "00001")),
+             "track2 should contain segment 1"
+
+      assert Enum.any?(track2_segment_uris, &String.contains?(&1, "00002")),
+             "track2 should contain segment 2"
+
+      assert Enum.any?(track2_segment_uris, &String.contains?(&1, "00003")),
+             "track2 should contain segment 3"
+
+      # 5. Updated durations should reflect only the remaining segments
+      # 3 segments * 2.0s each
+      expected_track1_duration = 3 * 2.0
+      # 3 segments * 2.0s each  
+      expected_track2_duration = 3 * 2.0
+      assert track1.duration == expected_track1_duration, "track1 duration should be updated"
+      assert track2.duration == expected_track2_duration, "track2 duration should be correct"
+    end
   end
 end
