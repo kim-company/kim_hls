@@ -1291,8 +1291,6 @@ defmodule HLS.Packager do
           else
             _error ->
               %HLS.Playlist.Media{
-                # TODO: Version 7 is requires for CMAF playlists.
-                version: 4,
                 uri: pending_uri,
                 type: playlist_type,
                 target_segment_duration: track.media_playlist.target_segment_duration,
