@@ -540,6 +540,8 @@ defmodule HLS.Packager do
         type = if is_nil(state.max_segments), do: :event
 
         media_playlist = %HLS.Playlist.Media{
+          # TODO: Version 7 is requires for CMAF playlists.
+          version: 4,
           uri: stream.uri,
           target_segment_duration: opts[:target_segment_duration],
           type: type
