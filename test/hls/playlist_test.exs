@@ -42,9 +42,9 @@ defmodule HLS.PlaylistTest do
         #EXT-X-VERSION:7
         #EXT-X-TARGETDURATION:3
         #EXT-X-MEDIA-SEQUENCE:0
-        #EXTINF:3.0,
+        #EXTINF:3.00000,
         data/0.ts
-        #EXTINF:2.0,
+        #EXTINF:2.00000,
         data/1.ts
         #EXT-X-ENDLIST
       """
@@ -59,9 +59,9 @@ defmodule HLS.PlaylistTest do
         #EXT-X-VERSION:7
         #EXT-X-TARGETDURATION:3
         #EXT-X-MEDIA-SEQUENCE:0
-        #EXTINF:3.0,
+        #EXTINF:3.00000,
         data/0.ts
-        #EXTINF:2.0,
+        #EXTINF:2.00000,
         data/1.ts
       """
 
@@ -79,9 +79,9 @@ defmodule HLS.PlaylistTest do
         #EXT-X-PLAYLIST-TYPE:EVENT
         #EXT-X-TARGETDURATION:3
         #EXT-X-MEDIA-SEQUENCE:0
-        #EXTINF:3.0,
+        #EXTINF:3.00000,
         data/0.ts
-        #EXTINF:2.0,
+        #EXTINF:2.00000,
         data/1.ts
         #EXT-X-ENDLIST
       """
@@ -98,9 +98,9 @@ defmodule HLS.PlaylistTest do
         #EXT-X-PLAYLIST-TYPE:VOD
         #EXT-X-TARGETDURATION:3
         #EXT-X-MEDIA-SEQUENCE:0
-        #EXTINF:3.0,
+        #EXTINF:3.00000,
         data/0.ts
-        #EXTINF:2.0,
+        #EXTINF:2.00000,
         data/1.ts
         #EXT-X-ENDLIST
       """
@@ -119,10 +119,10 @@ defmodule HLS.PlaylistTest do
       #EXT-X-TARGETDURATION:3
       #EXT-X-MEDIA-SEQUENCE:0
       #EXT-X-DISCONTINUITY-SEQUENCE:0
-      #EXTINF:3.0,
+      #EXTINF:3.00000,
       data/0.ts
       #EXT-X-DISCONTINUITY
-      #EXTINF:2.0,
+      #EXTINF:2.00000,
       data/1.ts
       """
 
@@ -139,10 +139,10 @@ defmodule HLS.PlaylistTest do
       #EXT-X-TARGETDURATION:3
       #EXT-X-MEDIA-SEQUENCE:0
       #EXT-X-DISCONTINUITY-SEQUENCE:5
-      #EXTINF:3.0,
+      #EXTINF:3.00000,
       data/0.ts
       #EXT-X-DISCONTINUITY
-      #EXTINF:2.0,
+      #EXTINF:2.00000,
       data/1.ts
       """
 
@@ -158,14 +158,14 @@ defmodule HLS.PlaylistTest do
         #EXT-X-TARGETDURATION:3
         #EXT-X-MEDIA-SEQUENCE:0
         #EXT-X-MAP:URI="main_1.mp4",BYTERANGE="719@0"
-        #EXTINF:3.0,
+        #EXTINF:3.00000,
         #EXT-X-BYTERANGE:1508000@719
         data/0.ts
-        #EXTINF:2.0,
+        #EXTINF:2.00000,
         #EXT-X-BYTERANGE:1510244@1508719
         data/1.ts
         #EXT-X-MAP:URI="main_2.mp4",BYTERANGE="1510244@1508719"
-        #EXTINF:2.0,
+        #EXTINF:2.00000,
         data/2.ts
       """
 
@@ -570,12 +570,12 @@ defmodule HLS.PlaylistTest do
       #EXT-X-VERSION:7
       #EXT-X-TARGETDURATION:10
       #EXT-X-MEDIA-SEQUENCE:0
-      #EXTINF:10.0,
+      #EXTINF:10.00000,
       video_segment_0_video_track.ts
       #EXT-X-DISCONTINUITY
-      #EXTINF:2.0,
+      #EXTINF:2.00000,
       video_segment_1_video_track.ts
-      #EXTINF:3.0,
+      #EXTINF:3.00000,
       video_segment_2_video_track.ts
       #EXT-X-ENDLIST
       """

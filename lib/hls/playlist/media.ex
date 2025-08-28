@@ -93,7 +93,7 @@ defimpl HLS.Playlist.Marshaler, for: HLS.Playlist.Media do
               Tag.ProgramDateTime,
               Tag.ProgramDateTime.marshal_datetime(segment.program_date_time)
             ),
-          Tag.marshal(Tag.Inf, duration) <> ",",
+          Tag.marshal(Tag.Inf, :erlang.float_to_binary(duration * 1.0, decimals: 5)) <> ",",
           segment.byterange &&
             Tag.marshal(Tag.Byterange, Tag.Byterange.marshal(segment.byterange)),
           to_string(uri)
