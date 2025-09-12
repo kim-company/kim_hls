@@ -267,7 +267,7 @@ defmodule HLS.PackagerTest do
       # Should have exactly max_segments
       assert length(track_after.media_playlist.segments) == max_segments
 
-      # Init section should still exist and be referenced by remaining segments  
+      # Init section should still exist and be referenced by remaining segments
       assert track_after.init_section != nil
 
       # All remaining segments should reference the same init section
@@ -380,7 +380,7 @@ defmodule HLS.PackagerTest do
           # max_segments: nil (default)
         )
 
-      # Add a track  
+      # Add a track
       :ok =
         Packager.add_track(packager, "test_track",
           stream: %VariantStream{
@@ -554,7 +554,7 @@ defmodule HLS.PackagerTest do
       # 5. Updated durations should reflect only the remaining segments
       # 3 segments * 2.0s each
       expected_track1_duration = 3 * 2.0
-      # 3 segments * 2.0s each  
+      # 3 segments * 2.0s each
       expected_track2_duration = 3 * 2.0
       assert track1.duration == expected_track1_duration, "track1 duration should be updated"
       assert track2.duration == expected_track2_duration, "track2 duration should be correct"
@@ -597,7 +597,7 @@ defmodule HLS.PackagerTest do
       track1_path = Path.join(temp_dir, "stream_track1.m3u8")
       File.write!(track1_path, track1_content)
 
-      # Create track2 playlist: behind with media_sequence_number: 0, 5 segments  
+      # Create track2 playlist: behind with media_sequence_number: 0, 5 segments
       # segment_count = length(segments) + media_sequence_number = 5 + 0 = 5
       track2_content = """
       #EXTM3U
@@ -681,8 +681,76 @@ defmodule HLS.PackagerTest do
       assert track2.duration == 0.0, "track2 duration should be 0"
 
       # This represents a reset scenario where tracks had different media_sequence_numbers
-      # indicating they were on different logical timelines. Complete reset ensures 
+      # indicating they were on different logical timelines. Complete reset ensures
       # both tracks are now ready to receive segments from the same synchronized position.
+    end
+
+    test "fix_tracks synchronizes playlists with different media_sequence_number and starting with empty playlist", %{
+      storage: storage,
+      manifest_uri: manifest_uri,
+      temp_dir: temp_dir
+    } do
+      # Create master playlist with two tracks
+      master_content = """
+      #EXTM3U
+      #EXT-X-VERSION:4
+      #EXT-X-INDEPENDENT-SEGMENTS
+      #EXT-X-STREAM-INF:BANDWIDTH=1000000,CODECS="avc1.64001e",RESOLUTION=640x360
+      stream_track1.m3u8
+      #EXT-X-STREAM-INF:BANDWIDTH=500000,CODECS="avc1.64001e",RESOLUTION=416x234
+      stream_track2.m3u8
+      """
+
+      master_path = Path.join(temp_dir, "stream.m3u8")
+      File.write!(master_path, master_content)
+
+      # Create track1 playlist with high sequence number 7028
+      track1_content = """
+      #EXTM3U
+      #EXT-X-VERSION:7
+      #EXT-X-TARGETDURATION:2
+      #EXT-X-MEDIA-SEQUENCE:7028
+      """
+
+      track1_path = Path.join(temp_dir, "stream_track1.m3u8")
+      File.write!(track1_path, track1_content)
+
+      # Create track2 playlist with different high sequence number 7026
+      track2_content = """
+      #EXTM3U
+      #EXT-X-VERSION:7
+      #EXT-X-TARGETDURATION:2
+      #EXT-X-MEDIA-SEQUENCE:7026
+      """
+
+      track2_path = Path.join(temp_dir, "stream_track2.m3u8")
+      File.write!(track2_path, track2_content)
+
+      # Start packager with max_segments
+      {:ok, packager} =
+        Packager.start_link(
+          storage: storage,
+          manifest_uri: manifest_uri,
+          max_segments: 3
+        )
+
+      # Get tracks to verify the fix worked
+      tracks = Packager.tracks(packager)
+      track1 = tracks["track1"]
+      track2 = tracks["track2"]
+
+      # Verify:
+      # 1. Both tracks should be initialized with empty playlists but ready to receive new segments
+      assert track1.media_playlist != nil
+      assert track2.media_playlist != nil
+
+      # 2. Media sequence numbers should be aligned to the highest value
+      assert track1.media_playlist.media_sequence_number == 7028
+      assert track2.media_playlist.media_sequence_number == 7028
+
+      # 3. Both tracks should be ready to accept new segments from position 7029
+      assert track1.segment_count == 7028
+      assert track2.segment_count == 7028
     end
   end
 end

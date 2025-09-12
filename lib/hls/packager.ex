@@ -78,7 +78,7 @@ defmodule HLS.Packager do
 
   ## Options
 
-  * `:max_segments` - Maximum number of segments to keep in each media playlist. When exceeded, 
+  * `:max_segments` - Maximum number of segments to keep in each media playlist. When exceeded,
     old segments are removed from playlists and deleted from storage. `nil` (default) means unlimited.
 
   ## Examples
@@ -216,7 +216,7 @@ defmodule HLS.Packager do
   end
 
   @doc """
-  When `max_segments` is `nil` (default): Writes down the remaining segments and marks all 
+  When `max_segments` is `nil` (default): Writes down the remaining segments and marks all
   playlists as finished (EXT-X-ENDLIST). Deletes pending playlists.
 
   When `max_segments` is configured: Cleans up all segments and playlists from storage.
@@ -1100,7 +1100,7 @@ defmodule HLS.Packager do
     # Update media sequence number to reflect removed segments
     new_media_sequence = track.media_playlist.media_sequence_number + segments_to_remove
 
-    # Count discontinuities in removed segments to update discontinuity_sequence  
+    # Count discontinuities in removed segments to update discontinuity_sequence
     removed_discontinuities =
       Enum.count(segments_to_trim, fn segment -> segment.discontinuity end)
 
@@ -1163,7 +1163,7 @@ defmodule HLS.Packager do
       track_id,
       # no preserved playlist since we're clearing everything
       nil,
-      # don't preserve any init sections 
+      # don't preserve any init sections
       false
     )
 
@@ -1310,27 +1310,43 @@ defmodule HLS.Packager do
           |> Enum.concat(track.pending_playlist.segments)
           |> Enum.reverse()
 
-        # NOTE: This check has been commented out because the synchronization step might clear all playlists.
-        # if Enum.empty?(all_segments) do
-        #   raise HLS.Packager.ResumeError, message: "Cannot resume a playlist without segments."
-        # end
+        # Handle empty playlists by inferring extension and init section from playlist
+        {segment_extension, init_section} =
+          if Enum.empty?(all_segments) do
+            # For empty playlists, try to infer extension from URI or default to .ts
+            extension =
+              track.stream.uri
+              |> to_string()
+              |> Path.extname()
+              |> case do
+                "" -> ".ts"
+                ext -> ext
+              end
 
-        last_segment = hd(all_segments)
+            {extension, nil}
+          else
+            last_segment = hd(all_segments)
 
-        segment_extension =
-          last_segment.uri
-          |> to_string()
-          |> Path.extname()
+            extension =
+              last_segment.uri
+              |> to_string()
+              |> Path.extname()
 
-        init_section =
-          if last_segment.init_section do
-            {:ok, payload} =
-              Storage.get(
-                storage,
-                HLS.Playlist.Media.build_segment_uri(master.uri, last_segment.init_section.uri)
-              )
+            init_section =
+              if last_segment.init_section do
+                {:ok, payload} =
+                  Storage.get(
+                    storage,
+                    HLS.Playlist.Media.build_segment_uri(
+                      master.uri,
+                      last_segment.init_section.uri
+                    )
+                  )
 
-            %{uri: last_segment.init_section.uri, payload: payload}
+                %{uri: last_segment.init_section.uri, payload: payload}
+              end
+
+            {extension, init_section}
           end
 
         segment_count = length(all_segments) + track.media_playlist.media_sequence_number
