@@ -5,6 +5,31 @@ defmodule HLS.PackagerTest do
   alias HLS.Packager
   alias HLS.VariantStream
 
+  defp create_master_content(tracks) do
+    """
+    #EXTM3U
+    #EXT-X-VERSION:4
+    #EXT-X-INDEPENDENT-SEGMENTS
+    """ <>
+      Enum.map_join(tracks, "", fn {bandwidth, codecs, resolution, uri} ->
+        "#EXT-X-STREAM-INF:BANDWIDTH=#{bandwidth},CODECS=\"#{codecs}\",RESOLUTION=#{resolution}\n#{uri}\n"
+      end)
+  end
+
+  defp create_track(track_name, media_sequence, segment_count, start_from) do
+    """
+    #EXTM3U
+    #EXT-X-VERSION:7
+    #EXT-X-TARGETDURATION:2
+    #EXT-X-MEDIA-SEQUENCE:#{media_sequence}
+    """ <>
+      Enum.map_join(0..(segment_count - 1), "", fn i ->
+        segment_number = start_from + i
+        padded = String.pad_leading("#{segment_number}", 5, "0")
+        "#EXTINF:2.0,\n#{track_name}/00000/#{track_name}_#{padded}.ts\n"
+      end)
+  end
+
   describe "sliding window functionality" do
     setup do
       storage = HLS.Storage.File.new()
@@ -267,7 +292,7 @@ defmodule HLS.PackagerTest do
       # Should have exactly max_segments
       assert length(track_after.media_playlist.segments) == max_segments
 
-      # Init section should still exist and be referenced by remaining segments  
+      # Init section should still exist and be referenced by remaining segments
       assert track_after.init_section != nil
 
       # All remaining segments should reference the same init section
@@ -380,7 +405,7 @@ defmodule HLS.PackagerTest do
           # max_segments: nil (default)
         )
 
-      # Add a track  
+      # Add a track
       :ok =
         Packager.add_track(packager, "test_track",
           stream: %VariantStream{
@@ -414,82 +439,42 @@ defmodule HLS.PackagerTest do
              "No segments should have program_date_time when max_segments is nil"
     end
 
-    test "fix_tracks synchronizes out-of-sync playlists on packager restart", %{
+    test "removes old unused segments and aligns media sequence number", %{
       storage: storage,
       manifest_uri: manifest_uri,
       temp_dir: temp_dir
     } do
       max_segments = 3
 
-      # First, create out-of-sync playlists by manually setting up storage files
-      # This simulates a scenario where tracks got out-of-sync due to different segment production rates
+      master_content =
+        create_master_content([
+          {1_000_000, "avc1.64001e", "640x360", "stream_track1.m3u8"},
+          {500_000, "avc1.64001e", "416x234", "stream_track2.m3u8"}
+        ])
 
-      # Create master playlist
-      master_content = """
-      #EXTM3U
-      #EXT-X-VERSION:4
-      #EXT-X-INDEPENDENT-SEGMENTS
-      #EXT-X-STREAM-INF:BANDWIDTH=1000000,CODECS="avc1.64001e",RESOLUTION=640x360
-      stream_track1.m3u8
-      #EXT-X-STREAM-INF:BANDWIDTH=500000,CODECS="avc1.64001e",RESOLUTION=416x234
-      stream_track2.m3u8
-      """
+      File.write!(Path.join(temp_dir, "stream.m3u8"), master_content)
 
-      master_path = Path.join(temp_dir, "stream.m3u8")
-      File.write!(master_path, master_content)
+      track1_content = create_track("stream_track1", 0, 5, 1)
 
-      # Create track1 playlist with 5 segments (ahead)
-      track1_content = """
-      #EXTM3U
-      #EXT-X-VERSION:7
-      #EXT-X-TARGETDURATION:2
-      #EXT-X-MEDIA-SEQUENCE:0
-      #EXTINF:2.0,
-      stream_track1/00000/stream_track1_00001.ts
-      #EXTINF:2.0,
-      stream_track1/00000/stream_track1_00002.ts
-      #EXTINF:2.0,
-      stream_track1/00000/stream_track1_00003.ts
-      #EXTINF:2.0,
-      stream_track1/00000/stream_track1_00004.ts
-      #EXTINF:2.0,
-      stream_track1/00000/stream_track1_00005.ts
-      """
+      File.write!(Path.join(temp_dir, "stream_track1.m3u8"), track1_content)
 
-      track1_path = Path.join(temp_dir, "stream_track1.m3u8")
-      File.write!(track1_path, track1_content)
+      track2_content = create_track("stream_track2", 0, 3, 1)
 
-      # Create track2 playlist with 3 segments (behind)
-      track2_content = """
-      #EXTM3U
-      #EXT-X-VERSION:7
-      #EXT-X-TARGETDURATION:2
-      #EXT-X-MEDIA-SEQUENCE:0
-      #EXTINF:2.0,
-      stream_track2/00000/stream_track2_00001.ts
-      #EXTINF:2.0,
-      stream_track2/00000/stream_track2_00002.ts
-      #EXTINF:2.0,
-      stream_track2/00000/stream_track2_00003.ts
-      """
+      File.write!(Path.join(temp_dir, "stream_track2.m3u8"), track2_content)
 
-      track2_path = Path.join(temp_dir, "stream_track2.m3u8")
-      File.write!(track2_path, track2_content)
-
-      # Create the actual segment files that the playlists reference
-      for track <- ["track1", "track2"] do
-        for i <- 1..5 do
+      # Create fake segment files
+      for {track, max_seg} <- [{"track1", 5}, {"track2", 3}] do
+        for i <- 1..max_seg do
           segment_dir = Path.join(temp_dir, "stream_#{track}/00000")
           File.mkdir_p!(segment_dir)
 
-          segment_path =
-            Path.join(segment_dir, "stream_#{track}_#{"#{i}" |> String.pad_leading(5, "0")}.ts")
-
-          File.write!(segment_path, "fake_segment_data_#{track}_#{i}")
+          File.write!(
+            Path.join(segment_dir, "stream_#{track}_#{"#{i}" |> String.pad_leading(5, "0")}.ts"),
+            "fake_segment_data_#{track}_#{i}"
+          )
         end
       end
 
-      # Now restart the packager with max_segments configured, which should trigger fix_tracks
       {:ok, packager} =
         Packager.start_link(
           storage: storage,
@@ -498,66 +483,162 @@ defmodule HLS.PackagerTest do
           resume_finished_tracks: true
         )
 
-      # Get the tracks to verify current state
       tracks = Packager.tracks(packager)
+      t1 = tracks["track1"]
+      t2 = tracks["track2"]
 
-      # Before the fix is implemented, the tracks will be out of sync
-      # track1 should have 5 segments, track2 should have 3 segments
-      track1 = tracks["track1"]
-      track2 = tracks["track2"]
+      assert t1.media_playlist.media_sequence_number == 0
+      assert t2.media_playlist.media_sequence_number == 0
 
-      assert track1 != nil, "track1 should exist"
-      assert track2 != nil, "track2 should exist"
+      # Track1 trimmed at head, Track2 unchanged
+      uris1 = Enum.map(t1.media_playlist.segments, &to_string(&1.uri))
+      uris2 = Enum.map(t2.media_playlist.segments, &to_string(&1.uri))
 
-      # Verify the fix worked correctly
-      # 1. Both tracks should have the same segment count (synchronized to minimum = 3)
-      assert track1.segment_count == 3, "track1 should be trimmed to 3 segments"
-      assert track2.segment_count == 3, "track2 should keep its 3 segments"
-      assert track1.segment_count == track2.segment_count, "tracks should be synchronized"
+      assert uris1 == [
+               "stream_track1/00000/stream_track1_00001.ts",
+               "stream_track1/00000/stream_track1_00002.ts",
+               "stream_track1/00000/stream_track1_00003.ts"
+             ]
 
-      # 2. Media sequence numbers should reflect removed segments
-      assert track1.media_playlist.media_sequence_number == 2,
-             "track1 should have sequence 2 (removed first 2)"
+      assert uris2 == [
+               "stream_track2/00000/stream_track2_00001.ts",
+               "stream_track2/00000/stream_track2_00002.ts",
+               "stream_track2/00000/stream_track2_00003.ts"
+             ]
+    end
 
-      assert track2.media_playlist.media_sequence_number == 0, "track2 should keep sequence 0"
+    test "removes extra segments ahead", %{
+      storage: storage,
+      manifest_uri: manifest_uri,
+      temp_dir: temp_dir
+    } do
+      max_segments = 3
 
-      # 3. Verify remaining segments in track1 are the last 3 (segments 3, 4, 5)
-      track1_segment_uris = Enum.map(track1.media_playlist.segments, &to_string(&1.uri))
+      # Master playlist
+      master_content =
+        create_master_content([
+          {1_000_000, "avc1.64001e", "640x360", "stream_track1.m3u8"},
+          {500_000, "avc1.64001e", "416x234", "stream_track2.m3u8"}
+        ])
 
-      assert Enum.any?(track1_segment_uris, &String.contains?(&1, "00003")),
-             "track1 should contain segment 3"
+      File.write!(Path.join(temp_dir, "stream.m3u8"), master_content)
 
-      assert Enum.any?(track1_segment_uris, &String.contains?(&1, "00004")),
-             "track1 should contain segment 4"
+      # Track1: 3 segments
+      track1_content = create_track("stream_track1", 0, 3, 1)
 
-      assert Enum.any?(track1_segment_uris, &String.contains?(&1, "00005")),
-             "track1 should contain segment 5"
+      File.write!(Path.join(temp_dir, "stream_track1.m3u8"), track1_content)
 
-      refute Enum.any?(track1_segment_uris, &String.contains?(&1, "00001")),
-             "track1 should not contain segment 1 (trimmed)"
+      # Track2: 5 segments ahead
+      track2_content = create_track("stream_track2", 0, 5, 1)
 
-      refute Enum.any?(track1_segment_uris, &String.contains?(&1, "00002")),
-             "track1 should not contain segment 2 (trimmed)"
+      File.write!(Path.join(temp_dir, "stream_track2.m3u8"), track2_content)
 
-      # 4. Track2 should keep all its original segments (1, 2, 3)
-      track2_segment_uris = Enum.map(track2.media_playlist.segments, &to_string(&1.uri))
+      # Create fake segment files
+      for {track, max_seg} <- [{"track1", 3}, {"track2", 5}] do
+        for i <- 1..max_seg do
+          segment_dir = Path.join(temp_dir, "stream_#{track}/00000")
+          File.mkdir_p!(segment_dir)
 
-      assert Enum.any?(track2_segment_uris, &String.contains?(&1, "00001")),
-             "track2 should contain segment 1"
+          File.write!(
+            Path.join(segment_dir, "stream_#{track}_#{"#{i}" |> String.pad_leading(5, "0")}.ts"),
+            "fake_segment_data_#{track}_#{i}"
+          )
+        end
+      end
 
-      assert Enum.any?(track2_segment_uris, &String.contains?(&1, "00002")),
-             "track2 should contain segment 2"
+      {:ok, packager} =
+        Packager.start_link(
+          storage: storage,
+          manifest_uri: manifest_uri,
+          max_segments: max_segments,
+          resume_finished_tracks: true
+        )
 
-      assert Enum.any?(track2_segment_uris, &String.contains?(&1, "00003")),
-             "track2 should contain segment 3"
+      tracks = Packager.tracks(packager)
+      t1 = tracks["track1"]
+      t2 = tracks["track2"]
 
-      # 5. Updated durations should reflect only the remaining segments
-      # 3 segments * 2.0s each
-      expected_track1_duration = 3 * 2.0
-      # 3 segments * 2.0s each  
-      expected_track2_duration = 3 * 2.0
-      assert track1.duration == expected_track1_duration, "track1 duration should be updated"
-      assert track2.duration == expected_track2_duration, "track2 duration should be correct"
+      assert t1.media_playlist.media_sequence_number == 0
+      assert t2.media_playlist.media_sequence_number == 0
+
+      # Track2 trimmed to match Track1 segments
+      uris2 = Enum.map(t2.media_playlist.segments, &to_string(&1.uri))
+
+      assert uris2 == [
+               "stream_track2/00000/stream_track2_00001.ts",
+               "stream_track2/00000/stream_track2_00002.ts",
+               "stream_track2/00000/stream_track2_00003.ts"
+             ]
+    end
+
+    test "removes extra segments ahead, remove old and aligns media sequence number", %{
+      storage: storage,
+      manifest_uri: manifest_uri,
+      temp_dir: temp_dir
+    } do
+      max_segments = 3
+
+      # Master playlist
+      master_content =
+        create_master_content([
+          {1_000_000, "avc1.64001e", "640x360", "stream_track1.m3u8"},
+          {500_000, "avc1.64001e", "416x234", "stream_track2.m3u8"}
+        ])
+
+      File.write!(Path.join(temp_dir, "stream.m3u8"), master_content)
+
+      # Track1: 3 segments
+      track1_content = create_track("stream_track1", 0, 5, 1)
+
+      File.write!(Path.join(temp_dir, "stream_track1.m3u8"), track1_content)
+
+      # Track2: 5 segments ahead
+      track2_content = create_track("stream_track2", 2, 5, 3)
+
+      File.write!(Path.join(temp_dir, "stream_track2.m3u8"), track2_content)
+
+      # Create fake segment files
+      for {track, max_seg} <- [{"track1", 5}, {"track2", 5}] do
+        for i <- 1..max_seg do
+          segment_dir = Path.join(temp_dir, "stream_#{track}/00000")
+          File.mkdir_p!(segment_dir)
+
+          File.write!(
+            Path.join(segment_dir, "stream_#{track}_#{"#{i}" |> String.pad_leading(5, "0")}.ts"),
+            "fake_segment_data_#{track}_#{i}"
+          )
+        end
+      end
+
+      {:ok, packager} =
+        Packager.start_link(
+          storage: storage,
+          manifest_uri: manifest_uri,
+          max_segments: max_segments,
+          resume_finished_tracks: true
+        )
+
+      tracks = Packager.tracks(packager)
+      t1 = tracks["track1"]
+      t2 = tracks["track2"]
+
+      assert t1.media_playlist.media_sequence_number == 2
+      assert t2.media_playlist.media_sequence_number == 2
+
+      uris1 = Enum.map(t1.media_playlist.segments, &to_string(&1.uri))
+      uris2 = Enum.map(t2.media_playlist.segments, &to_string(&1.uri))
+
+      assert uris1 == [
+               "stream_track1/00000/stream_track1_00003.ts",
+               "stream_track1/00000/stream_track1_00004.ts",
+               "stream_track1/00000/stream_track1_00005.ts"
+             ]
+
+      assert uris2 == [
+               "stream_track2/00000/stream_track2_00003.ts",
+               "stream_track2/00000/stream_track2_00004.ts",
+               "stream_track2/00000/stream_track2_00005.ts"
+             ]
     end
 
     test "fix_tracks synchronizes playlists with different media_sequence_number values", %{
@@ -568,53 +649,25 @@ defmodule HLS.PackagerTest do
       max_segments = 3
 
       # Create master playlist
-      master_content = """
-      #EXTM3U
-      #EXT-X-VERSION:4
-      #EXT-X-INDEPENDENT-SEGMENTS
-      #EXT-X-STREAM-INF:BANDWIDTH=1000000,CODECS="avc1.64001e",RESOLUTION=640x360
-      stream_track1.m3u8
-      #EXT-X-STREAM-INF:BANDWIDTH=500000,CODECS="avc1.64001e",RESOLUTION=416x234
-      stream_track2.m3u8
-      """
+      master_content =
+        create_master_content([
+          {1_000_000, "avc1.64001e", "640x360", "stream_track1.m3u8"},
+          {500_000, "avc1.64001e", "416x234", "stream_track2.m3u8"}
+        ])
 
       master_path = Path.join(temp_dir, "stream.m3u8")
       File.write!(master_path, master_content)
 
       # Create track1 playlist: far ahead with media_sequence_number: 10, only 2 segments
       # segment_count = length(segments) + media_sequence_number = 2 + 10 = 12
-      track1_content = """
-      #EXTM3U
-      #EXT-X-VERSION:7
-      #EXT-X-TARGETDURATION:2
-      #EXT-X-MEDIA-SEQUENCE:10
-      #EXTINF:2.0,
-      stream_track1/00000/stream_track1_00011.ts
-      #EXTINF:2.0,
-      stream_track1/00000/stream_track1_00012.ts
-      """
+      track1_content = create_track("stream_track1", 10, 2, 11)
 
       track1_path = Path.join(temp_dir, "stream_track1.m3u8")
       File.write!(track1_path, track1_content)
 
-      # Create track2 playlist: behind with media_sequence_number: 0, 5 segments  
+      # Create track2 playlist: behind with media_sequence_number: 0, 5 segments
       # segment_count = length(segments) + media_sequence_number = 5 + 0 = 5
-      track2_content = """
-      #EXTM3U
-      #EXT-X-VERSION:7
-      #EXT-X-TARGETDURATION:2
-      #EXT-X-MEDIA-SEQUENCE:0
-      #EXTINF:2.0,
-      stream_track2/00000/stream_track2_00001.ts
-      #EXTINF:2.0,
-      stream_track2/00000/stream_track2_00002.ts
-      #EXTINF:2.0,
-      stream_track2/00000/stream_track2_00003.ts
-      #EXTINF:2.0,
-      stream_track2/00000/stream_track2_00004.ts
-      #EXTINF:2.0,
-      stream_track2/00000/stream_track2_00005.ts
-      """
+      track2_content = create_track("stream_track2", 0, 5, 1)
 
       track2_path = Path.join(temp_dir, "stream_track2.m3u8")
       File.write!(track2_path, track2_content)
@@ -681,7 +734,7 @@ defmodule HLS.PackagerTest do
       assert track2.duration == 0.0, "track2 duration should be 0"
 
       # This represents a reset scenario where tracks had different media_sequence_numbers
-      # indicating they were on different logical timelines. Complete reset ensures 
+      # indicating they were on different logical timelines. Complete reset ensures
       # both tracks are now ready to receive segments from the same synchronized position.
     end
   end

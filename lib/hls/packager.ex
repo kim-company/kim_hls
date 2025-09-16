@@ -78,7 +78,7 @@ defmodule HLS.Packager do
 
   ## Options
 
-  * `:max_segments` - Maximum number of segments to keep in each media playlist. When exceeded, 
+  * `:max_segments` - Maximum number of segments to keep in each media playlist. When exceeded,
     old segments are removed from playlists and deleted from storage. `nil` (default) means unlimited.
 
   ## Examples
@@ -216,7 +216,7 @@ defmodule HLS.Packager do
   end
 
   @doc """
-  When `max_segments` is `nil` (default): Writes down the remaining segments and marks all 
+  When `max_segments` is `nil` (default): Writes down the remaining segments and marks all
   playlists as finished (EXT-X-ENDLIST). Deletes pending playlists.
 
   When `max_segments` is configured: Cleans up all segments and playlists from storage.
@@ -984,9 +984,9 @@ defmodule HLS.Packager do
 
     all_synced? =
       tracks
-      |> Enum.map(fn {_id, t} -> t.segment_count end)
+      |> Enum.map(fn {_id, t} -> {t.media_playlist.media_sequence_number, t.segment_count} end)
       |> Enum.uniq()
-      |> then(fn x -> length(x) == 1 end)
+      |> length() == 1
 
     if all_synced? do
       tracks
@@ -1001,49 +1001,124 @@ defmodule HLS.Packager do
   end
 
   # Synchronizes out-of-sync tracks using recovery (trim) or reset strategy
-  defp fix_out_of_sync_tracks(tracks, storage, master, _opts) do
-    # Check if all tracks have the same media_sequence_number (same timeline)
-    media_sequences =
-      Enum.map(tracks, fn {_id, track} -> track.media_playlist.media_sequence_number end)
-
-    same_timeline = Enum.uniq(media_sequences) |> length() == 1
-
-    if same_timeline do
-      # RECOVERY: All tracks on same timeline, can safely trim segments
-      recover_by_trimming_segments(tracks, storage, master)
+  defp fix_out_of_sync_tracks(tracks, storage, master, opts) do
+    if can_recover_by_trimming(tracks) do
+      # RECOVERY: All tracks can safely be aligned
+      recover_by_trimming_segments(tracks, storage, master, opts)
     else
-      # RESET: Tracks on different timelines, need complete reset
+      # RESET: Not enough overlap, need complete reset
       reset_to_aligned_position(tracks, storage, master)
     end
   end
 
-  # Recovery strategy: trim segments while maintaining same media_sequence_number
-  defp recover_by_trimming_segments(tracks, storage, master) do
-    segment_counts = Enum.map(tracks, fn {_id, track} -> track.segment_count end)
-    min_segments = Enum.min(segment_counts)
+  # Can we safely trim old segments to align tracks?
+  defp can_recover_by_trimming(tracks) do
+    media_sequences =
+      Enum.map(tracks, fn {_id, track} -> track.media_playlist.media_sequence_number end)
 
-    track_info =
+    max_seq = Enum.max(media_sequences)
+
+    Enum.all?(tracks, fn {_id, track} ->
+      # how many segments we need to remove from HEAD so this track starts at max_seq
+      diff = max_seq - track.media_playlist.media_sequence_number
+      length(track.media_playlist.segments) >= diff
+    end)
+  end
+
+  # Recover by trimming head then tail (to make all playlists the same length)
+  defp recover_by_trimming_segments(tracks, storage, master, opts) do
+    max_segments = opts[:max_segments] || :infinity
+
+    # Align media sequence numbers
+    max_media_sequence =
       tracks
-      |> Enum.map(fn {id, track} ->
-        segments_to_trim = track.segment_count - min_segments
-        "#{id}: #{track.segment_count} -> #{min_segments} (trimming #{segments_to_trim})"
+      |> Enum.map(fn {_id, track} -> track.media_playlist.media_sequence_number end)
+      |> Enum.max()
+
+    # For each track compute how many future segments it will have after advancing to max_media_sequence,
+    # then take the minimal future count across tracks and cap with max_segments.
+    min_future_segments =
+      tracks
+      |> Enum.map(fn {_id, track} ->
+        # segments remaining after advancing this track's start to max_media_sequence
+        len = length(track.media_playlist.segments)
+        head_advance = max_media_sequence - track.media_playlist.media_sequence_number
+        len - head_advance
       end)
-      |> Enum.join(", ")
+      |> Enum.min()
+      |> min(max_segments)
 
     Logger.warning(fn ->
+      track_info =
+        tracks
+        |> Enum.map(fn {id, track} ->
+          head_advance = max_media_sequence - track.media_playlist.media_sequence_number
+          total_future = length(track.media_playlist.segments) - max(0, head_advance)
+
+          "#{id}: seq #{track.media_playlist.media_sequence_number} -> #{max_media_sequence}, future segments #{total_future} -> #{min_future_segments}"
+        end)
+        |> Enum.join(", ")
+
       """
-      #{__MODULE__}.fix_tracks/4 using RECOVERY strategy (same timeline), trimming to #{min_segments} segments:
+      #{__MODULE__}.fix_tracks/4 using RECOVERY strategy, trimming head and tail:
         #{track_info}
-      Note: Some content will be lost during this synchronization operation.
+      Note: All tracks will be aligned to media-sequence #{max_media_sequence} and trimmed to #{min_future_segments} segments max.
       """
     end)
 
+    # Apply head-trim (advance each playlist to max_media_sequence) then tail-trim (keep only min_future_segments)
     tracks
     |> Enum.map(fn {track_id, track} ->
-      if track.segment_count > min_segments do
-        trim_track_to_segment_count(track, track_id, min_segments, storage, master)
+      # head trim amount (how many segments to remove from head)
+      head_trim = max(0, max_media_sequence - track.media_playlist.media_sequence_number)
+
+      {track_id, updated_track} =
+        if head_trim > 0 do
+          trim_track_head(track, track_id, head_trim, storage, master)
+        else
+          {track_id, track}
+        end
+
+      # now remove extra segments from the tail so all tracks have min_future_segments
+      current_segments = updated_track.media_playlist.segments
+      total_after_head = length(current_segments)
+      to_remove_tail = max(0, total_after_head - min_future_segments)
+
+      if to_remove_tail > 0 do
+        Logger.warning("#{track_id}: trimming #{to_remove_tail} extra segments from tail")
+
+        # Keep the first min_future_segments segments
+        remaining_segments = Enum.take(current_segments, min_future_segments)
+
+        new_duration = Enum.reduce(remaining_segments, 0.0, fn s, acc -> acc + s.duration end)
+
+        updated_track = %{
+          updated_track
+          | segment_count: length(remaining_segments),
+            duration: new_duration,
+            media_playlist: %{updated_track.media_playlist | segments: remaining_segments}
+        }
+
+        # Write updated playlist
+        playlist_uri =
+          HLS.Playlist.build_absolute_uri(master.uri, updated_track.media_playlist.uri)
+
+        case Storage.put(
+               storage,
+               playlist_uri,
+               HLS.Playlist.marshal(updated_track.media_playlist),
+               max_retries: 10
+             ) do
+          :ok ->
+            :ok
+
+          {:error, error} ->
+            Logger.warning("Failed to write playlist for #{track_id}: #{inspect(error)}")
+        end
+
+        {track_id, updated_track}
       else
-        {track_id, track}
+        {track_id, updated_track}
       end
     end)
     |> Map.new()
@@ -1084,36 +1159,25 @@ defmodule HLS.Packager do
     |> Map.new()
   end
 
-  # Trims a single track to the specified segment count
-  defp trim_track_to_segment_count(track, track_id, target_count, storage, master) do
-    segments_to_remove = track.segment_count - target_count
+  # Trim single track
+  defp trim_track_head(track, track_id, segments_to_trim, storage, master) do
+    Logger.warning("#{track_id}: trimming #{segments_to_trim} old segments from head")
 
-    # Split segments to keep the most recent ones
-    {segments_to_trim, remaining_segments} =
-      Enum.split(track.media_playlist.segments, segments_to_remove)
+    {segments_to_remove, remaining_segments} =
+      Enum.split(track.media_playlist.segments, segments_to_trim)
 
-    # Calculate new duration based on remaining segments
     new_duration =
-      remaining_segments
-      |> Enum.reduce(0.0, fn segment, acc -> acc + segment.duration end)
+      Enum.reduce(remaining_segments, 0.0, fn segment, acc -> acc + segment.duration end)
 
-    # Update media sequence number to reflect removed segments
-    new_media_sequence = track.media_playlist.media_sequence_number + segments_to_remove
-
-    # Count discontinuities in removed segments to update discontinuity_sequence  
-    removed_discontinuities =
-      Enum.count(segments_to_trim, fn segment -> segment.discontinuity end)
+    new_media_sequence = track.media_playlist.media_sequence_number + segments_to_trim
+    removed_discontinuities = Enum.count(segments_to_remove, fn s -> s.discontinuity end)
 
     new_discontinuity_sequence =
       track.media_playlist.discontinuity_sequence + removed_discontinuities
 
-    # Calculate the final segment count after trimming
-    final_segment_count = target_count
-
-    # Update the track
     updated_track = %{
       track
-      | segment_count: final_segment_count,
+      | segment_count: length(remaining_segments),
         duration: new_duration,
         media_playlist: %{
           track.media_playlist
@@ -1123,30 +1187,25 @@ defmodule HLS.Packager do
         }
     }
 
-    # Write the updated playlist to storage
     playlist_uri = HLS.Playlist.build_absolute_uri(master.uri, track.media_playlist.uri)
 
-    case Storage.put(
-           storage,
-           playlist_uri,
-           HLS.Playlist.marshal(updated_track.media_playlist),
+    case Storage.put(storage, playlist_uri, HLS.Playlist.marshal(updated_track.media_playlist),
            max_retries: 10
          ) do
       :ok ->
-        Logger.debug(fn ->
-          "#{__MODULE__}.trim_track_to_segment_count/5 updated playlist for track #{track_id} (#{segments_to_remove} segments trimmed)"
-        end)
+        Logger.debug(
+          "#{__MODULE__}: updated playlist for track #{track_id} (trimmed #{segments_to_trim} segments)"
+        )
 
       {:error, error} ->
         Logger.warning(
-          "#{__MODULE__}.trim_track_to_segment_count/5 Failed to write updated playlist for track #{track_id}: #{inspect(error)}"
+          "#{__MODULE__}: failed to write playlist for #{track_id}: #{inspect(error)}"
         )
     end
 
-    # Clean up the trimmed segments from storage
     cleanup_segments_from_storage(
       %{storage: storage, manifest_uri: master.uri},
-      segments_to_trim,
+      segments_to_remove,
       track_id,
       updated_track.media_playlist
     )
@@ -1163,7 +1222,7 @@ defmodule HLS.Packager do
       track_id,
       # no preserved playlist since we're clearing everything
       nil,
-      # don't preserve any init sections 
+      # don't preserve any init sections
       false
     )
 
