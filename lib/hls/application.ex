@@ -3,9 +3,7 @@ defmodule HLS.Application do
 
   @impl true
   def start(_type, _args) do
-    children = [
-      {Task.Supervisor, name: HLS.Task.Supervisor}
-    ]
+    children = []
 
     opts = [strategy: :one_for_one, name: HLS.Supervisor]
     Supervisor.start_link(children, opts)

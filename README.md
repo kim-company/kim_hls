@@ -22,7 +22,7 @@ The library is structured around three main components:
 
 ### Core Components
 
-- **HLS.Packager** - Central GenServer managing HLS playlist generation and segment handling. Manages master and media playlists, track addition, segment uploads, and synchronization.
+- **HLS.Packager** - Pure functional module for HLS playlist generation and segment handling. Returns actions for the caller to execute, providing explicit control over I/O operations.
 
 - **HLS.Tracker** - GenServer monitoring HLS renditions, polling media playlists and notifying about new segments for live streaming scenarios.
 
@@ -40,19 +40,42 @@ The library is structured around three main components:
 ### Basic Packager Usage
 
 ```elixir
-# Start a packager
-{:ok, pid} = HLS.Packager.start_link(storage: %HLS.Storage.File{base_path: "./output"})
+# Initialize packager state
+{:ok, state} = HLS.Packager.new(
+  manifest_uri: URI.new!("stream.m3u8"),
+  max_segments: 10  # Optional: enables sliding window
+)
 
 # Add a variant stream
-variant = %HLS.VariantStream{uri: "stream_480p.m3u8", bandwidth: 800_000}
-:ok = HLS.Packager.add_variant_stream(pid, variant)
+{state, []} = HLS.Packager.add_track(state, "video_480p",
+  stream: %HLS.VariantStream{
+    bandwidth: 800_000,
+    resolution: {854, 480},
+    codecs: ["avc1.64001e"]
+  },
+  segment_extension: ".ts",
+  target_segment_duration: 6.0
+)
 
-# Upload segments
-segment = %HLS.Segment{duration: 6.0, uri: "segment_001.ts"}
-:ok = HLS.Packager.upload_segment(pid, "stream_480p.m3u8", segment, segment_data)
+# Add segment (returns upload action)
+{state, [action]} = HLS.Packager.put_segment(state, "video_480p", duration: 6.0)
 
-# Flush to create VOD playlist
-:ok = HLS.Packager.flush(pid)
+# Caller uploads the segment
+storage = HLS.Storage.File.new(base_path: "./output")
+:ok = HLS.Storage.put(storage, action.uri, segment_data)
+
+# Confirm upload (may return playlist write actions)
+{state, actions} = HLS.Packager.confirm_upload(state, action.id)
+
+# Execute write actions
+Enum.each(actions, fn
+  %HLS.Packager.Action.WritePlaylist{uri: uri, content: content} ->
+    HLS.Storage.put(storage, uri, content)
+end)
+
+# Sync and flush to create VOD playlist
+{state, actions} = HLS.Packager.flush(state)
+Enum.each(actions, &execute_action(&1, storage))
 ```
 
 ### Live Stream Tracking
@@ -74,11 +97,12 @@ end
 
 ### Configuration Options
 
-Key options for `HLS.Packager.start_link/1`:
+Key options for `HLS.Packager.new/1`:
 
-- `max_segments` - Maximum segments to retain (enables sliding window)
-- `resume_finished_tracks` - Resume finished playlists on startup
-- `restore_pending_segments` - Restore pending segments on startup
+- `manifest_uri` (required) - URI of the master playlist
+- `max_segments` - Maximum segments to retain (enables sliding window mode with automatic cleanup)
+
+For resuming from existing playlists, use `HLS.Packager.resume/1` with loaded playlist data.
 
 ## Copyright and License
 
