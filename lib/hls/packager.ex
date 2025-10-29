@@ -73,6 +73,7 @@ defmodule HLS.Packager do
     defmodule UploadSegment do
       @moduledoc "Upload a media segment"
       defstruct [:id, :uri, :track_id, :init_section_uri]
+
       @type t :: %__MODULE__{
               id: String.t(),
               uri: URI.t(),
@@ -117,6 +118,45 @@ defmodule HLS.Packager do
       @type t :: %__MODULE__{uri: URI.t(), type: :media | :pending | :master}
     end
 
+    defmodule Warning do
+      @moduledoc """
+      RFC 8216 compliance warning or error.
+
+      Warnings allow the caller to decide how to handle violations:
+      - `:error` severity: RFC violation that may break playback
+      - `:warning` severity: RFC violation that may cause issues
+      - `:info` severity: Non-critical informational message
+
+      ## Example
+
+          %Action.Warning{
+            severity: :error,
+            code: :segment_exceeds_target_duration,
+            message: "Segment duration 7.0s exceeds target 6.0s",
+            details: %{
+              track_id: "video",
+              duration: 7.0,
+              target: 6.0
+            }
+          }
+      """
+      defstruct [:severity, :code, :message, :details]
+
+      @type severity :: :error | :warning | :info
+      @type code ::
+              :segment_exceeds_target_duration
+              | :timestamp_drift_detected
+              | :unsynchronized_discontinuity
+              | :track_behind_sync_point
+
+      @type t :: %__MODULE__{
+              severity: severity(),
+              code: code(),
+              message: String.t(),
+              details: map()
+            }
+    end
+
     @type t ::
             UploadSegment.t()
             | UploadInitSection.t()
@@ -124,6 +164,7 @@ defmodule HLS.Packager do
             | DeleteSegment.t()
             | DeleteInitSection.t()
             | DeletePlaylist.t()
+            | Warning.t()
   end
 
   defmodule Track do
@@ -389,6 +430,8 @@ defmodule HLS.Packager do
 
   The caller must upload the segment payload and then call `confirm_upload/2`.
 
+  May also return warning actions if RFC 8216 compliance issues are detected.
+
   ## Examples
 
       {state, [action]} = Packager.put_segment(state, "video", duration: 5.2)
@@ -399,13 +442,16 @@ defmodule HLS.Packager do
       # Confirm (may trigger playlist writes)
       {state, actions} = Packager.confirm_upload(state, action.id)
   """
-  @spec put_segment(t(), track_id(), keyword()) :: {t(), [Action.UploadSegment.t()]}
+  @spec put_segment(t(), track_id(), keyword()) ::
+          {t(), [Action.UploadSegment.t() | Action.Warning.t()]}
   def put_segment(state, track_id, opts) do
     track = Map.fetch!(state.tracks, track_id)
     duration = Keyword.fetch!(opts, :duration)
 
     next_index = track.segment_count + 1
-    segment_uri = relative_segment_uri(track.media_playlist.uri, track.segment_extension, next_index)
+
+    segment_uri =
+      relative_segment_uri(track.media_playlist.uri, track.segment_extension, next_index)
 
     segment = %Segment{
       uri: segment_uri,
@@ -444,7 +490,28 @@ defmodule HLS.Packager do
       init_section_uri: segment.init_section && segment.init_section.uri
     }
 
-    {new_state, [action]}
+    # RFC 8216: Segment duration MUST NOT exceed target duration
+    warnings =
+      if duration > track.media_playlist.target_segment_duration do
+        [
+          %Action.Warning{
+            severity: :error,
+            code: :segment_exceeds_target_duration,
+            message:
+              "Segment duration #{duration}s exceeds target #{track.media_playlist.target_segment_duration}s (RFC 8216 violation)",
+            details: %{
+              track_id: track_id,
+              segment_index: next_index,
+              duration: duration,
+              target_duration: track.media_playlist.target_segment_duration
+            }
+          }
+        ]
+      else
+        []
+      end
+
+    {new_state, [action | warnings]}
   end
 
   @doc """
@@ -519,8 +586,10 @@ defmodule HLS.Packager do
   Marks all tracks to add discontinuity to next segment.
 
   Only effective when `max_segments` is configured (sliding window).
+
+  May return warning actions if tracks are not synchronized.
   """
-  @spec discontinue(t()) :: {t(), []}
+  @spec discontinue(t()) :: {t(), [Action.Warning.t()]}
   def discontinue(state) when is_nil(state.max_segments), do: {state, []}
 
   def discontinue(state) do
@@ -529,7 +598,10 @@ defmodule HLS.Packager do
         {id, %{track | discontinue_next_segment: true}}
       end)
 
-    {%{state | tracks: new_tracks}, []}
+    # RFC 8216: Warn if discontinuities are not synchronized across tracks
+    warnings = check_discontinuity_alignment(state)
+
+    {%{state | tracks: new_tracks}, warnings}
   end
 
   @doc """
@@ -539,6 +611,8 @@ defmodule HLS.Packager do
   to write updated playlists. May also return delete actions if sliding window
   is enabled.
 
+  May also return warning actions if RFC 8216 compliance issues are detected.
+
   ## Examples
 
       {state, actions} = Packager.sync(state, 5)
@@ -547,6 +621,7 @@ defmodule HLS.Packager do
       #   %Action.WritePlaylist{type: :media, ...},
       #   %Action.WritePlaylist{type: :master, ...},
       #   %Action.DeleteSegment{...},  # if sliding window
+      #   %Action.Warning{...},  # if RFC violations detected
       # ]
   """
   @spec sync(t(), pos_integer()) :: {t(), [Action.t()]}
@@ -567,7 +642,13 @@ defmodule HLS.Packager do
     # Maybe write master playlist
     {new_state, master_actions} = maybe_write_master(new_state, sync_point)
 
-    {new_state, all_track_actions ++ master_actions}
+    # RFC 8216: Check for timestamp drift across variant streams
+    drift_warnings = check_timestamp_drift(new_state)
+
+    # RFC 8216: Check for tracks behind sync point
+    sync_warnings = check_tracks_behind_sync(new_state, sync_point)
+
+    {new_state, all_track_actions ++ master_actions ++ drift_warnings ++ sync_warnings}
   end
 
   @doc """
@@ -704,7 +785,8 @@ defmodule HLS.Packager do
 
       track = %{
         track
-        | next_sync_datetime: DateTime.add(track.next_sync_datetime, round(segment.duration), :second)
+        | next_sync_datetime:
+            DateTime.add(track.next_sync_datetime, round(segment.duration), :second)
       }
 
       {segment, track}
@@ -777,6 +859,7 @@ defmodule HLS.Packager do
   defp maybe_write_master(state, sync_point) do
     if sync_point >= 3 do
       master = build_master(state)
+
       action = %Action.WritePlaylist{
         type: :master,
         uri: state.manifest_uri,
@@ -829,7 +912,9 @@ defmodule HLS.Packager do
       state.tracks
       |> Enum.map(fn {id, track} ->
         # All pending segments become part of media playlist
-        all_segments = track.pending_playlist.segments ++ Enum.map(track.pending_segments, & &1.segment)
+        all_segments =
+          track.pending_playlist.segments ++ Enum.map(track.pending_segments, & &1.segment)
+
         pending_duration = Enum.reduce(all_segments, 0.0, &(&1.duration + &2))
 
         vod_media = %{
@@ -927,6 +1012,147 @@ defmodule HLS.Packager do
     }
 
     {new_state, delete_actions ++ [master_delete]}
+  end
+
+  # RFC 8216 Compliance Checks
+
+  defp check_discontinuity_alignment(state) do
+    # Get total segment counts for each track
+    segment_counts =
+      state.tracks
+      |> Enum.map(fn {id, track} ->
+        total_segments =
+          length(track.media_playlist.segments) + length(track.pending_playlist.segments)
+
+        {id, total_segments}
+      end)
+
+    # Check if all tracks have the same number of segments
+    unique_counts = segment_counts |> Enum.map(&elem(&1, 1)) |> Enum.uniq()
+
+    if length(unique_counts) > 1 do
+      [
+        %Action.Warning{
+          severity: :warning,
+          code: :unsynchronized_discontinuity,
+          message:
+            "RFC 8216: Discontinuity called with misaligned tracks. Variant streams should have matching segment counts for synchronized discontinuities.",
+          details: %{
+            segment_counts: Map.new(segment_counts),
+            expected: "All tracks should have the same segment count when adding discontinuities"
+          }
+        }
+      ]
+    else
+      []
+    end
+  end
+
+  defp check_timestamp_drift(state) do
+    # Only check when max_segments is set (sliding window with timestamps)
+    if state.max_segments do
+      variant_tracks =
+        state.tracks
+        |> Enum.filter(fn {_id, track} -> is_struct(track.stream, VariantStream) end)
+        |> Enum.map(fn {id, track} -> {id, track} end)
+
+      # Group variant streams by their position (assuming corresponding segments should align)
+      if length(variant_tracks) > 1 do
+        check_variant_timestamp_alignment(variant_tracks)
+      else
+        []
+      end
+    else
+      []
+    end
+  end
+
+  defp check_variant_timestamp_alignment(variant_tracks) do
+    # Get the minimum segment count across all tracks
+    min_segments =
+      variant_tracks
+      |> Enum.map(fn {_id, track} -> length(track.media_playlist.segments) end)
+      |> Enum.min(fn -> 0 end)
+
+    if min_segments > 0 do
+      # Check each position for timestamp alignment
+      0..(min_segments - 1)
+      |> Enum.flat_map(fn index ->
+        timestamps =
+          variant_tracks
+          |> Enum.map(fn {id, track} ->
+            segment = Enum.at(track.media_playlist.segments, index)
+            {id, segment.program_date_time}
+          end)
+          |> Enum.filter(fn {_id, dt} -> dt != nil end)
+
+        # Check if all timestamps at this position match
+        if length(timestamps) > 1 do
+          [{_first_id, first_dt} | rest] = timestamps
+
+          mismatches =
+            Enum.filter(rest, fn {_id, dt} ->
+              DateTime.compare(first_dt, dt) != :eq
+            end)
+
+          if length(mismatches) > 0 do
+            all_timestamps = Map.new(timestamps)
+
+            [
+              %Action.Warning{
+                severity: :error,
+                code: :timestamp_drift_detected,
+                message:
+                  "RFC 8216 violation: Matching segments across variant streams have misaligned timestamps at position #{index}",
+                details: %{
+                  position: index,
+                  timestamps: all_timestamps,
+                  expected: first_dt,
+                  drift_seconds:
+                    Enum.map(mismatches, fn {id, dt} ->
+                      {id, DateTime.diff(dt, first_dt, :second)}
+                    end)
+                    |> Map.new()
+                }
+              }
+            ]
+          else
+            []
+          end
+        else
+          []
+        end
+      end)
+    else
+      []
+    end
+  end
+
+  defp check_tracks_behind_sync(state, sync_point) do
+    state.tracks
+    |> Enum.flat_map(fn {id, track} ->
+      available =
+        length(track.pending_playlist.segments) + length(track.media_playlist.segments)
+
+      if available < sync_point do
+        [
+          %Action.Warning{
+            severity: :warning,
+            code: :track_behind_sync_point,
+            message:
+              "Track '#{id}' only has #{available} segments but sync point is #{sync_point}",
+            details: %{
+              track_id: id,
+              available_segments: available,
+              sync_point: sync_point,
+              missing_segments: sync_point - available
+            }
+          }
+        ]
+      else
+        []
+      end
+    end)
   end
 
   # URI helpers (copied from original)
