@@ -487,12 +487,22 @@ defmodule HLS.Packager do
   end
 
   def handle_call(:next_sync_point, _from, state) do
-    max_segments =
+    # Get the media playlist that is the farthest ahead in time.
+    # If a playlist is stuck in the past, it will still make sure that we continue
+    # to synchronize where we left off.
+    max_published_segments =
       state.tracks
       |> Enum.map(fn {_id, track} -> media_playlist_segment_count(track) end)
       |> Enum.max(fn -> 0 end)
 
-    sync_index = max_segments + 1
+    # This will be used if the playlist is being written faster than realtime.
+    # Returns the maximum safe synchronization point if all playlists are up to date.
+    min_ready_segments =
+      state.tracks
+      |> Enum.map(fn {_id, track} -> max(0, ready_segment_count(track) - 3) end)
+      |> Enum.min(fn -> 0 end)
+
+    sync_index = max(max_published_segments, min_ready_segments) + 1
 
     {:reply, sync_index, state}
   end
@@ -858,6 +868,10 @@ defmodule HLS.Packager do
     end)
 
     %{packager | tracks: tracks}
+  end
+
+  defp ready_segment_count(track) do
+    track.segment_count - length(track.upload_tasks)
   end
 
   defp media_playlist_segment_count(track) do
