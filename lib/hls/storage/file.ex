@@ -1,11 +1,15 @@
 defmodule HLS.Storage.File do
-  defstruct []
+  defstruct base_dir: nil
 
-  def new(), do: %__MODULE__{}
+  def new(opts \\ []) do
+    %__MODULE__{
+      base_dir: Keyword.get(opts, :base_dir)
+    }
+  end
 
   defimpl HLS.Storage do
-    def get(_storage, uri, _opts) do
-      case File.read(to_path(uri)) do
+    def get(storage, uri, _opts) do
+      case File.read(to_path(storage, uri)) do
         {:ok, binary} ->
           {:ok, binary}
 
@@ -17,26 +21,35 @@ defmodule HLS.Storage.File do
       end
     end
 
-    def put(_storage, uri, binary, _opts) do
-      path = to_path(uri)
+    def put(storage, uri, binary, _opts) do
+      path = to_path(storage, uri)
 
       with :ok <- File.mkdir_p(Path.dirname(path)) do
         File.write(path, binary)
       end
     end
 
-    def delete(_storage, uri, _opts) do
-      case File.rm(to_path(uri)) do
+    def delete(storage, uri, _opts) do
+      case File.rm(to_path(storage, uri)) do
         :ok -> :ok
         {:error, :enoent} -> :ok
         other -> other
       end
     end
 
-    defp to_path(%URI{scheme: "file"} = uri) do
+    defp to_path(_storage, %URI{scheme: "file"} = uri) do
       [uri.host, uri.path]
       |> Enum.reject(&(is_nil(&1) or &1 == ""))
       |> Path.join()
+    end
+
+    # Handle relative URIs (no scheme) - resolve against base_dir if provided
+    defp to_path(storage, %URI{scheme: nil, path: path}) when is_binary(path) do
+      if storage.base_dir do
+        Path.join(storage.base_dir, path)
+      else
+        path
+      end
     end
   end
 end

@@ -92,6 +92,54 @@ This is a major architectural change that replaces the GenServer-based packager 
   - `HLS.Packager.Action.DeleteSegment` - Delete old segment
   - `HLS.Packager.Action.DeleteInitSection` - Delete orphaned init section
   - `HLS.Packager.Action.DeletePlaylist` - Remove playlist file
+  - `HLS.Packager.Action.Warning` - RFC 8216 compliance warnings (NEW)
+
+- **RFC 8216 Compliance Warning System**: Automatic detection of violations returned as actions
+  - **Segment Exceeds Target Duration** (`:segment_exceeds_target_duration`)
+    - Severity: `:error` - RFC violation that may break playback
+    - Detected in `put_segment/3` when duration > target duration
+    - Returns detailed context: track_id, duration, target_duration, segment_index
+
+  - **Timestamp Drift Detection** (`:timestamp_drift_detected`)
+    - Severity: `:error` - RFC violation requiring matching timestamps across variant streams
+    - Detected in `sync/2` when variant streams have misaligned program-date-time values
+    - Returns drift details: position, timestamps for all tracks, drift in seconds
+
+  - **Unsynchronized Discontinuities** (`:unsynchronized_discontinuity`)
+    - Severity: `:warning` - Best practice violation for discontinuity synchronization
+    - Detected in `discontinue/1` when tracks have different segment counts
+    - Returns segment counts for all tracks
+
+  - **Track Behind Sync Point** (`:track_behind_sync_point`)
+    - Severity: `:warning` - Helpful for detecting upload/encoding delays
+    - Detected in `sync/2` when track doesn't have enough segments
+    - Returns available segments, sync point, missing segment count
+
+- **Warning Action Details**:
+  ```elixir
+  %HLS.Packager.Action.Warning{
+    severity: :error | :warning | :info,
+    code: :segment_exceeds_target_duration | :timestamp_drift_detected | ...,
+    message: "Human-readable description",
+    details: %{...}  # Contextual information for debugging
+  }
+  ```
+
+- **Flexible Warning Handling**: Caller decides how to handle warnings
+  ```elixir
+  # Strict mode - abort on errors
+  {state, actions} = Packager.put_segment(state, "video", duration: 7.0)
+  case Enum.find(actions, &match?(%Action.Warning{severity: :error}, &1)) do
+    nil -> execute_actions(actions)
+    warning -> {:error, warning}
+  end
+
+  # Lenient mode - log and monitor
+  {state, actions} = Packager.sync(state, 5)
+  actions
+  |> Enum.filter(&match?(%Action.Warning{}, &1))
+  |> Enum.each(&Logger.warning("[#{&1.code}] #{&1.message}"))
+  ```
 
 - **Explicit State Management**: State is immutable and threaded through operations
   - `HLS.Packager.Track` struct exposed for inspection
@@ -141,10 +189,11 @@ This is a major architectural change that replaces the GenServer-based packager 
 ### Technical Details
 
 - Removed ~1600 lines of GenServer implementation
-- Added ~1000 lines of pure functional implementation
-- 31 comprehensive tests with full RFC 8216 compliance validation
+- Added ~1000 lines of pure functional implementation + warning system
+- 37 comprehensive tests with full RFC 8216 compliance validation (including 6 warning system tests)
 - Zero external state dependencies
 - All operations are referentially transparent
+- Warning system adds ~150 lines of validation logic
 
 ### Upgrade Path
 
