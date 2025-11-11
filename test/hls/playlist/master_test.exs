@@ -221,7 +221,7 @@ defmodule HLS.Playlist.MasterTest do
       master =
         raw
         |> Playlist.unmarshal(%Playlist.Master{})
-        |> Playlist.Master.update_alternative_rendition("Ciaoone", :audio, fn alt ->
+        |> Playlist.Master.update_alternative_rendition("Ciaoone", :audio, fn %HLS.AlternativeRendition{} = alt ->
           %HLS.AlternativeRendition{alt | name: "A"}
         end)
 

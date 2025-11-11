@@ -51,10 +51,12 @@ defmodule HLS.Playlist.Master do
   end
 
   @spec set_default(t(), binary()) :: t()
-  def set_default(master, rendition_name) do
+  def set_default(%__MODULE__{} = master, rendition_name) do
     alts =
       master.alternative_renditions
-      |> Enum.map(fn alt -> %AlternativeRendition{alt | default: rendition_name == alt.name} end)
+      |> Enum.map(fn %AlternativeRendition{} = alt ->
+        %AlternativeRendition{alt | default: rendition_name == alt.name}
+      end)
 
     %__MODULE__{master | alternative_renditions: alts}
   end
@@ -65,7 +67,7 @@ defmodule HLS.Playlist.Master do
           AlternativeRendition.type_t(),
           (AlternativeRendition.t() -> AlternativeRendition.t())
         ) :: t()
-  def update_alternative_rendition(master, rendition_name, rendition_type, update_fn) do
+  def update_alternative_rendition(%__MODULE__{} = master, rendition_name, rendition_type, update_fn) do
     is_present =
       master.alternative_renditions
       |> Enum.filter(fn alt -> alt.name == rendition_name and alt.type == rendition_type end)
@@ -100,7 +102,7 @@ defmodule HLS.Playlist.Master do
   end
 
   @spec add_alternative_rendition(t(), AlternativeRendition.t()) :: t()
-  def add_alternative_rendition(master, alternative) do
+  def add_alternative_rendition(%__MODULE__{} = master, %AlternativeRendition{} = alternative) do
     # Check that a rendition with this name is not already present.
     already_present =
       master.alternative_renditions
