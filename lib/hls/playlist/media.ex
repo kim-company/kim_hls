@@ -206,7 +206,7 @@ defimpl HLS.Playlist.Unmarshaler, for: HLS.Playlist.Media do
         %Segment{} = segment, last ->
           {[%Segment{segment | init_section: last}], last}
       end)
-      |> Stream.transform(0, fn segment, acc ->
+      |> Stream.transform(0, fn %Segment{} = segment, acc ->
         {[%Segment{segment | from: acc}], acc + segment.duration}
       end)
       |> Enum.to_list()
