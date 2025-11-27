@@ -31,6 +31,7 @@ defmodule HLS.MixProject do
     [
       {:req, "~> 0.5.8", optional: true},
       {:telemetry, "~> 1.3", optional: true},
+      {:benchee, "~> 1.3", only: :dev, runtime: false},
       {:ex_doc, ">= 0.0.0", only: :dev, runtime: false}
     ]
   end
