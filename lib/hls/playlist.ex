@@ -12,6 +12,13 @@ defmodule HLS.Playlist do
   def unmarshal(data = "#EXTM3U" <> _rest, playlist) do
     unmarshalers = Unmarshaler.supported_tags(playlist)
 
+    # Optimize: separate URI handler from tag handlers for faster lookup
+    # SegmentURI is usually the most common "tag" in media playlists
+    {uri_handler, tag_handlers} =
+      Enum.split_with(unmarshalers, fn u -> u.id() == :uri end)
+
+    uri_handler = List.first(uri_handler)
+
     init_tag = fn module, data, sequence ->
       value_or_attrs = module.unmarshal(data)
       tag = module.init(value_or_attrs, sequence)
@@ -21,13 +28,18 @@ defmodule HLS.Playlist do
 
     tags =
       data
-      |> String.split(~r/\R/, trim: true)
+      |> split_lines()
       |> Enum.reduce({[], 0, nil}, fn
         line, acc = {marshaled, n, nil} ->
+          # Fast path for segment URIs (most common in media playlists)
           matching_unmarshaler =
-            Enum.find(unmarshalers, fn unmarshaler ->
-              unmarshaler.match?(line)
-            end)
+            if uri_handler && !String.starts_with?(line, "#") do
+              uri_handler
+            else
+              Enum.find(tag_handlers, fn unmarshaler ->
+                unmarshaler.match?(line)
+              end)
+            end
 
           if matching_unmarshaler == nil do
             # Ignore each line that we do not recognize.
@@ -60,6 +72,12 @@ defmodule HLS.Playlist do
 
   def unmarshal(data, _playlist) do
     raise ArgumentError, "Input data is not a valid M3U file: #{inspect(data)}"
+  end
+
+  # Optimized line splitting using list of separators instead of regex
+  defp split_lines(data) do
+    data
+    |> String.split(["\r\n", "\r", "\n"], trim: true)
   end
 
   def marshal(playlist) do
