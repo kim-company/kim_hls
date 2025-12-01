@@ -6,7 +6,7 @@ defmodule HLS.MixProject do
   def project do
     [
       app: :kim_hls,
-      version: "2.5.11",
+      version: "2.5.12",
       elixir: "~> 1.14",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
@@ -31,8 +31,8 @@ defmodule HLS.MixProject do
     [
       {:req, "~> 0.5.8", optional: true},
       {:telemetry, "~> 1.3", optional: true},
-      {:ex_doc, ">= 0.0.0", only: :dev, runtime: false},
-      {:benchee, "~> 1.0", only: :dev}
+      {:benchee, "~> 1.3", only: :dev, runtime: false},
+      {:ex_doc, ">= 0.0.0", only: :dev, runtime: false}
     ]
   end
 

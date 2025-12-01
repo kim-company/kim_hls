@@ -16,7 +16,7 @@ defmodule HLS.PlaylistTest do
           }
         ]
         |> Enum.with_index()
-        |> Enum.map(fn {seg, index} ->
+        |> Enum.map(fn {%Segment{} = seg, index} ->
           %Segment{
             seg
             | uri: URI.new!("data/#{index}.ts"),
@@ -36,7 +36,7 @@ defmodule HLS.PlaylistTest do
       %{playlist: playlist}
     end
 
-    test "when the playlist is finished", %{playlist: playlist} do
+    test "when the playlist is finished", %{playlist: %Media{} = playlist} do
       marshaled = """
         #EXTM3U
         #EXT-X-VERSION:7
@@ -53,7 +53,7 @@ defmodule HLS.PlaylistTest do
       assert Playlist.marshal(playlist) == String.replace(marshaled, " ", "", global: true)
     end
 
-    test "when the playlist is not finished", %{playlist: playlist} do
+    test "when the playlist is not finished", %{playlist: %Media{} = playlist} do
       marshaled = """
         #EXTM3U
         #EXT-X-VERSION:7
@@ -72,7 +72,7 @@ defmodule HLS.PlaylistTest do
       assert Playlist.marshal(playlist) == String.replace(marshaled, " ", "", global: true)
     end
 
-    test "when the playlist is EVENT, but finished", %{playlist: playlist} do
+    test "when the playlist is EVENT, but finished", %{playlist: %Media{} = playlist} do
       marshaled = """
         #EXTM3U
         #EXT-X-VERSION:7
@@ -91,7 +91,7 @@ defmodule HLS.PlaylistTest do
       assert Playlist.marshal(playlist) == String.replace(marshaled, " ", "", global: true)
     end
 
-    test "when the playlist is VOD", %{playlist: playlist} do
+    test "when the playlist is VOD", %{playlist: %Media{} = playlist} do
       marshaled = """
         #EXTM3U
         #EXT-X-VERSION:7
@@ -112,7 +112,7 @@ defmodule HLS.PlaylistTest do
       assert Playlist.marshal(playlist) == String.replace(marshaled, " ", "", global: true)
     end
 
-    test "with EXT-X-DISCONTINUITY", %{playlist: playlist} do
+    test "with EXT-X-DISCONTINUITY", %{playlist: %Media{} = playlist} do
       marshaled = """
       #EXTM3U
       #EXT-X-VERSION:7
@@ -187,7 +187,7 @@ defmodule HLS.PlaylistTest do
           }
         ]
         |> Enum.with_index()
-        |> Enum.map(fn {seg, index} ->
+        |> Enum.map(fn {%Segment{} = seg, index} ->
           %Segment{
             seg
             | uri: URI.new!("data/#{index}.ts"),
