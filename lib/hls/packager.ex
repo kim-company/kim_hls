@@ -593,6 +593,8 @@ defmodule HLS.Packager do
   def discontinue(state) when is_nil(state.max_segments), do: {state, []}
 
   def discontinue(state) do
+    timeline_reference = DateTime.utc_now(:millisecond)
+
     new_tracks =
       Map.new(state.tracks, fn {id, track} ->
         {id, %{track | discontinue_next_segment: true}}
@@ -601,7 +603,7 @@ defmodule HLS.Packager do
     # RFC 8216: Warn if discontinuities are not synchronized across tracks
     warnings = check_discontinuity_alignment(state)
 
-    {%{state | tracks: new_tracks}, warnings}
+    {%{state | tracks: new_tracks, timeline_reference: timeline_reference}, warnings}
   end
 
   @doc """
