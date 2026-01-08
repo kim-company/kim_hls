@@ -186,30 +186,39 @@ defimpl HLS.Playlist.Unmarshaler, for: HLS.Playlist.Media do
         [playlist_type] -> playlist_type.value
       end
 
-    segments =
+    # Optimized: combine filter and mapping in a single pass, then process segments
+    segment_list =
       tags
-      |> Enum.filter(fn
-        {{_, :segment}, _val} -> true
-        _other -> false
+      |> Enum.reduce([], fn
+        {{seq, :segment}, val}, acc -> [{seq, val} | acc]
+        _other, acc -> acc
       end)
-      |> Enum.map(fn {{seq, _}, val} -> {seq, val} end)
-      |> Enum.into([])
       |> Enum.sort()
-      |> Stream.map(fn {_, val} -> Segment.from_tags(val) end)
-      |> Stream.map(&Segment.update_absolute_sequence(&1, sequence_number.value))
-      # For each segment, the EXT-X-MAP is the last map we've seen so far in the playlist.
-      # See https://datatracker.ietf.org/doc/html/rfc8216#section-4.3.2.5
-      |> Stream.transform(nil, fn
-        %Segment{init_section: init_section} = segment, _last when init_section != nil ->
-          {[segment], init_section}
 
-        %Segment{} = segment, last ->
-          {[%Segment{segment | init_section: last}], last}
+    # Process segments with init section tracking and from time calculation
+    segments =
+      segment_list
+      |> Enum.reduce({[], nil, 0}, fn {_, val}, {acc, last_init, from_acc} ->
+        segment =
+          val
+          |> Segment.from_tags()
+          |> Segment.update_absolute_sequence(sequence_number.value)
+
+        # Handle init section tracking
+        {init_section, new_last_init} =
+          if segment.init_section != nil do
+            {segment.init_section, segment.init_section}
+          else
+            {last_init, last_init}
+          end
+
+        # Set from time and init section
+        segment = %Segment{segment | init_section: init_section, from: from_acc}
+
+        {[segment | acc], new_last_init, from_acc + segment.duration}
       end)
-      |> Stream.transform(0, fn segment, acc ->
-        {[%Segment{segment | from: acc}], acc + segment.duration}
-      end)
-      |> Enum.to_list()
+      |> elem(0)
+      |> Enum.reverse()
 
     %HLS.Playlist.Media{
       playlist

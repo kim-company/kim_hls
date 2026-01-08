@@ -73,7 +73,7 @@ defmodule HLS.Segment do
   end
 
   @spec update_absolute_sequence(t, pos_integer()) :: t
-  def update_absolute_sequence(segment, media_sequence) do
+  def update_absolute_sequence(%__MODULE__{} = segment, media_sequence) do
     %__MODULE__{segment | absolute_sequence: media_sequence + segment.relative_sequence}
   end
 end

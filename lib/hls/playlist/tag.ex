@@ -159,48 +159,53 @@ defmodule HLS.Playlist.Tag do
 
   @doc """
   Parses an attribute list string as specified in RFC 8216, section 4.2
+  Optimized version using binary pattern matching instead of codepoints
   """
   def parse_attribute_list(data) do
-    buf = {[], []}
-
-    # possible states:
-    # - key: parsing key
-    # - val: parsing value
-    # - qval: parsing quoted value
-    state = {:key, buf, %{}}
-
-    put_key_val = fn {keybuf, valbuf}, acc ->
-      key = keybuf |> Enum.reverse() |> Enum.join()
-      val = valbuf |> Enum.reverse() |> Enum.join()
-      Map.put(acc, key, val)
-    end
-
-    {_, buf, parsed} =
-      data
-      |> String.codepoints()
-      |> Enum.reduce(state, fn
-        "=", {:key, buf, acc} ->
-          {:val, buf, acc}
-
-        cp, {:key, {keybuf, valbuf}, acc} ->
-          {:key, {[cp | keybuf], valbuf}, acc}
-
-        "\"", {:val, buf, acc} ->
-          {:qval, buf, acc}
-
-        "\"", {:qval, buf, acc} ->
-          {:val, buf, acc}
-
-        ",", {:val, buf, acc} ->
-          {:key, {[], []}, put_key_val.(buf, acc)}
-
-        cp, {state, {keybuf, valbuf}, acc} when state in [:val, :qval] ->
-          {state, {keybuf, [cp | valbuf]}, acc}
-      end)
-
-    # Last holded value is still in the buffer at this point
-    put_key_val.(buf, parsed)
+    parse_attribute_list_binary(data, :key, "", "", %{})
   end
+
+  # State machine for parsing attribute lists using binary pattern matching
+  # States: :key (parsing key), :val (parsing value), :qval (parsing quoted value)
+
+  # Parsing key - equals sign transitions to value
+  defp parse_attribute_list_binary(<<"=", rest::binary>>, :key, key, _val, acc) do
+    parse_attribute_list_binary(rest, :val, key, "", acc)
+  end
+
+  # Parsing key - accumulate characters
+  defp parse_attribute_list_binary(<<char::utf8, rest::binary>>, :key, key, val, acc) do
+    parse_attribute_list_binary(rest, :key, key <> <<char::utf8>>, val, acc)
+  end
+
+  # Parsing value - quote starts quoted value
+  defp parse_attribute_list_binary(<<"\"", rest::binary>>, :val, key, "", acc) do
+    parse_attribute_list_binary(rest, :qval, key, "", acc)
+  end
+
+  # Parsing value - comma saves current pair and starts new key
+  defp parse_attribute_list_binary(<<",", rest::binary>>, :val, key, val, acc) do
+    parse_attribute_list_binary(rest, :key, "", "", Map.put(acc, key, val))
+  end
+
+  # Parsing value - accumulate characters
+  defp parse_attribute_list_binary(<<char::utf8, rest::binary>>, :val, key, val, acc) do
+    parse_attribute_list_binary(rest, :val, key, val <> <<char::utf8>>, acc)
+  end
+
+  # Parsing quoted value - quote ends quoted value
+  defp parse_attribute_list_binary(<<"\"", rest::binary>>, :qval, key, val, acc) do
+    parse_attribute_list_binary(rest, :val, key, val, acc)
+  end
+
+  # Parsing quoted value - accumulate characters (including commas)
+  defp parse_attribute_list_binary(<<char::utf8, rest::binary>>, :qval, key, val, acc) do
+    parse_attribute_list_binary(rest, :qval, key, val <> <<char::utf8>>, acc)
+  end
+
+  # End of input - save last key/value pair if present
+  defp parse_attribute_list_binary("", _state, "", "", acc), do: acc
+  defp parse_attribute_list_binary("", _state, key, val, acc), do: Map.put(acc, key, val)
 
   @spec capture_value!(String.t(), tag_id_t(), String.t(), (String.t() -> any)) :: any
   def capture_value!(data, tag_id, match_pattern, parser_fun) do

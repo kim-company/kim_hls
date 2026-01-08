@@ -23,9 +23,9 @@ This is an Elixir library for HTTP Live Streaming (HLS) that implements RFC 8216
 
 ### Core Components
 
-1. **HLS.Packager** (`lib/hls/packager.ex`) - Central component that manages HLS playlist generation and segment handling
-   - GenServer that manages master and media playlists
-   - Handles track addition, segment uploads, and synchronization
+1. **HLS.Packager** (`lib/hls/packager.ex`) - Pure functional packager that manages playlist state
+   - Returns actions the caller executes (upload segments, write playlists, delete files)
+   - Handles track addition, segment uploads, synchronization, and flush
    - Manages both variant streams and alternative renditions
    - Supports resuming from existing playlists
 
@@ -47,7 +47,8 @@ This is an Elixir library for HTTP Live Streaming (HLS) that implements RFC 8216
 
 ### Key Design Patterns
 
-- Uses GenServer for stateful components (Packager, Tracker)
+- Uses GenServer for stateful components (Tracker)
+- Packager is a pure state machine that returns explicit actions
 - Protocol-based storage abstraction allows different backends
 - Async task-based segment uploads with proper error handling
 - Telemetry integration for monitoring (optional dependency)
@@ -67,11 +68,12 @@ Tests are organized in `test/hls/` with fixtures in `test/fixtures/` including r
 
 ### Configuration Options
 
-Key configuration options for `HLS.Packager.start_link/1`:
+Key configuration options for `HLS.Packager.new/1` and `HLS.Packager.resume/1`:
 
-- `max_segments: nil | pos_integer()` - Maximum segments to keep in media playlists. When exceeded, old segments are removed from playlists and deleted from storage. Also changes `flush/1` behavior to perform complete cleanup instead of creating VOD playlists. Default: `nil` (unlimited)
-- `resume_finished_tracks: boolean()` - Whether to resume finished playlists. Default: `false`
-- `restore_pending_segments: boolean()` - Whether to restore pending segments on startup. Default: `true`
+- `manifest_uri: URI.t()` - Required for `new/1`, identifies the master playlist URI.
+- `max_segments: nil | pos_integer()` - Maximum segments to keep in media playlists. When exceeded, old segments are removed from playlists and storage. Also changes `flush/1` behavior to perform complete cleanup instead of creating VOD playlists. Default: `nil` (unlimited)
+- `master_playlist: HLS.Playlist.Master.t()` - Required for `resume/1`, loaded by the caller.
+- `media_playlists: [HLS.Playlist.Media.t()]` - Required for `resume/1`, loaded by the caller.
 
 ### Important Behavioral Changes
 
