@@ -215,6 +215,34 @@ defmodule HLS.PackagerTest do
       assert master_content =~ "BANDWIDTH=2000000"
     end
 
+    test "master playlist includes EXT-X-VERSION and EXT-X-INDEPENDENT-SEGMENTS", %{
+      manifest_uri: manifest_uri,
+      storage: storage
+    } do
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri)
+
+      {state, []} =
+        Packager.add_track(state, "video",
+          stream: %VariantStream{
+            bandwidth: 2_000_000,
+            codecs: ["avc1.64001f"]
+          },
+          segment_extension: ".ts",
+          target_segment_duration: 6.0
+        )
+
+      {state, [action]} = Packager.put_segment(state, "video", duration: 6.0)
+      ActionExecutor.execute_action(action, storage, manifest_uri)
+      {state, actions} = Packager.confirm_upload(state, action.id)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+      {_state, actions} = Packager.sync(state, 3)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      {:ok, master_content} = TestStorage.get(storage, manifest_uri)
+      assert master_content =~ "#EXT-X-VERSION:"
+      assert master_content =~ "#EXT-X-INDEPENDENT-SEGMENTS"
+    end
+
     test "master playlist includes alternative renditions", %{
       manifest_uri: manifest_uri,
       storage: storage
@@ -270,6 +298,205 @@ defmodule HLS.PackagerTest do
       # Verify video stream references audio group and includes audio codec
       assert master_content =~ ~s(AUDIO="audio-group")
       assert master_content =~ ~s(CODECS="avc1.64001f,mp4a.40.2")
+    end
+
+    test "master playlist orders EXT-X-MEDIA before EXT-X-STREAM-INF", %{
+      manifest_uri: manifest_uri,
+      storage: storage
+    } do
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri)
+
+      {state, []} =
+        Packager.add_track(state, "video",
+          stream: %VariantStream{
+            bandwidth: 2_000_000,
+            codecs: ["avc1.64001f"],
+            audio: "audio-group"
+          },
+          segment_extension: ".ts",
+          target_segment_duration: 6.0,
+          codecs: ["avc1.64001f"]
+        )
+
+      {state, []} =
+        Packager.add_track(state, "audio_en",
+          stream: %AlternativeRendition{
+            type: :audio,
+            group_id: "audio-group",
+            name: "English",
+            language: "en",
+            uri: URI.new!("audio_en.m3u8"),
+            default: true,
+            autoselect: true
+          },
+          segment_extension: ".ts",
+          target_segment_duration: 6.0,
+          codecs: ["mp4a.40.2"]
+        )
+
+      state =
+        Enum.reduce(["video", "audio_en"], state, fn track_id, s ->
+          {s, [action]} = Packager.put_segment(s, track_id, duration: 6.0)
+          ActionExecutor.execute_action(action, storage, manifest_uri)
+          {s, actions} = Packager.confirm_upload(s, action.id)
+          ActionExecutor.execute_actions(actions, storage, manifest_uri)
+          s
+        end)
+
+      {_state, actions} = Packager.sync(state, 3)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+      {:ok, master_content} = TestStorage.get(storage, manifest_uri)
+
+      {media_idx, _} = :binary.match(master_content, "#EXT-X-MEDIA")
+      {stream_idx, _} = :binary.match(master_content, "#EXT-X-STREAM-INF")
+
+      assert media_idx != nil
+      assert stream_idx != nil
+      assert media_idx < stream_idx
+    end
+
+    test "master playlist stream tags are immediately followed by URIs", %{
+      manifest_uri: manifest_uri,
+      storage: storage
+    } do
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri)
+
+      {state, []} =
+        Packager.add_track(state, "video",
+          stream: %VariantStream{
+            bandwidth: 2_000_000,
+            codecs: ["avc1.64001f"],
+            resolution: {1280, 720}
+          },
+          segment_extension: ".ts",
+          target_segment_duration: 6.0,
+          codecs: ["avc1.64001f"]
+        )
+
+      {state, [action]} = Packager.put_segment(state, "video", duration: 6.0)
+      ActionExecutor.execute_action(action, storage, manifest_uri)
+      {state, actions} = Packager.confirm_upload(state, action.id)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+      {_state, actions} = Packager.sync(state, 3)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      {:ok, master_content} = TestStorage.get(storage, manifest_uri)
+      lines = String.split(master_content, "\n")
+
+      lines
+      |> Enum.with_index()
+      |> Enum.filter(fn {line, _idx} -> String.starts_with?(line, "#EXT-X-STREAM-INF:") end)
+      |> Enum.each(fn {_line, idx} ->
+        assert Enum.at(lines, idx + 1) =~ ".m3u8"
+      end)
+    end
+
+    test "master playlist includes required EXT-X-MEDIA attributes", %{
+      manifest_uri: manifest_uri,
+      storage: storage
+    } do
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri)
+
+      {state, []} =
+        Packager.add_track(state, "video",
+          stream: %VariantStream{
+            bandwidth: 2_000_000,
+            codecs: ["avc1.64001f"],
+            audio: "audio-group"
+          },
+          segment_extension: ".ts",
+          target_segment_duration: 6.0,
+          codecs: ["avc1.64001f"]
+        )
+
+      {state, []} =
+        Packager.add_track(state, "audio_en",
+          stream: %AlternativeRendition{
+            type: :audio,
+            group_id: "audio-group",
+            name: "English",
+            language: "en",
+            uri: URI.new!("audio_en.m3u8"),
+            default: true,
+            autoselect: true
+          },
+          segment_extension: ".ts",
+          target_segment_duration: 6.0,
+          codecs: ["mp4a.40.2"]
+        )
+
+      state =
+        Enum.reduce(["video", "audio_en"], state, fn track_id, s ->
+          {s, [action]} = Packager.put_segment(s, track_id, duration: 6.0)
+          ActionExecutor.execute_action(action, storage, manifest_uri)
+          {s, actions} = Packager.confirm_upload(s, action.id)
+          ActionExecutor.execute_actions(actions, storage, manifest_uri)
+          s
+        end)
+
+      {_state, actions} = Packager.sync(state, 3)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+      {:ok, master_content} = TestStorage.get(storage, manifest_uri)
+
+      media_line =
+        master_content
+        |> String.split("\n")
+        |> Enum.find(&String.starts_with?(&1, "#EXT-X-MEDIA:"))
+
+      assert media_line =~ "TYPE=AUDIO"
+      assert media_line =~ "GROUP-ID=\"audio-group\""
+      assert media_line =~ "NAME=\"English\""
+      assert media_line =~ "URI=\"stream_audio_en.m3u8\""
+    end
+
+    test "master playlist enforces EXT-X-MEDIA requirements for closed captions", %{
+      manifest_uri: manifest_uri,
+      storage: storage
+    } do
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri)
+
+      {state, []} =
+        Packager.add_track(state, "video",
+          stream: %VariantStream{
+            bandwidth: 2_000_000,
+            codecs: ["avc1.64001f"],
+            closed_captions: "cc-group"
+          },
+          segment_extension: ".ts",
+          target_segment_duration: 6.0
+        )
+
+      {state, []} =
+        Packager.add_track(state, "cc",
+          stream: %AlternativeRendition{
+            type: :closed_captions,
+            group_id: "cc-group",
+            name: "CC1",
+            instream_id: "CC1"
+          },
+          segment_extension: ".ts",
+          target_segment_duration: 6.0
+        )
+
+      {state, [action]} = Packager.put_segment(state, "video", duration: 6.0)
+      ActionExecutor.execute_action(action, storage, manifest_uri)
+      {state, actions} = Packager.confirm_upload(state, action.id)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+      {_state, actions} = Packager.sync(state, 3)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      {:ok, master_content} = TestStorage.get(storage, manifest_uri)
+
+      media_line =
+        master_content
+        |> String.split("\n")
+        |> Enum.find(&String.starts_with?(&1, "#EXT-X-MEDIA:"))
+
+      assert media_line =~ "TYPE=CLOSED-CAPTIONS"
+      assert media_line =~ "GROUP-ID=\"cc-group\""
+      assert media_line =~ "NAME=\"CC1\""
+      assert media_line =~ "INSTREAM-ID=\"CC1\""
+      refute media_line =~ "URI="
     end
   end
 

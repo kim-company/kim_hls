@@ -318,13 +318,22 @@ defmodule HLS.Packager do
     end
 
     opts = validate_add_track_opts!(opts)
-    stream_uri = build_track_variant_uri(state.manifest_uri, track_id)
-    stream = %{opts.stream | uri: stream_uri}
+    stream =
+      case opts.stream do
+        %AlternativeRendition{type: :closed_captions} = alt ->
+          %{alt | uri: nil}
+
+        stream ->
+          stream_uri = build_track_variant_uri(state.manifest_uri, track_id)
+          %{stream | uri: stream_uri}
+      end
 
     type = if state.max_segments, do: nil, else: :event
 
+    media_playlist_uri = stream.uri || build_track_variant_uri(state.manifest_uri, track_id)
+
     media_playlist = %Media{
-      uri: stream.uri,
+      uri: media_playlist_uri,
       target_segment_duration: opts.target_segment_duration,
       type: type
     }
@@ -336,7 +345,7 @@ defmodule HLS.Packager do
       segment_extension: opts.segment_extension,
       init_section: nil,
       media_playlist: media_playlist,
-      pending_playlist: %{media_playlist | uri: append_to_path(stream.uri, "_pending")},
+      pending_playlist: %{media_playlist | uri: append_to_path(media_playlist.uri, "_pending")},
       codecs: opts.codecs,
       next_sync_datetime: state.timeline_reference,
       pending_segments: []

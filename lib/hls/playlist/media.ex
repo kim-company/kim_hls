@@ -125,7 +125,6 @@ defimpl HLS.Playlist.Marshaler, for: HLS.Playlist.Media do
         segments: segments
       }) do
     has_discontinuities = Enum.any?(segments, fn segment -> segment.discontinuity end)
-
     [
       {Tag.Version, version},
       if(type == nil,

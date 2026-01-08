@@ -195,8 +195,8 @@ defimpl HLS.Playlist.Marshaler, for: HLS.Playlist.Master do
       "#EXTM3U",
       "#EXT-X-VERSION:#{playlist.version}",
       if(playlist.independent_segments, do: "#EXT-X-INDEPENDENT-SEGMENTS"),
-      marshal_stream_inf(playlist.streams),
-      marshal_media(playlist.alternative_renditions)
+      marshal_media(playlist.alternative_renditions),
+      marshal_stream_inf(playlist.streams)
     ]
     |> List.flatten()
     |> Enum.reject(&is_nil/1)
@@ -218,6 +218,8 @@ defimpl HLS.Playlist.Marshaler, for: HLS.Playlist.Master do
   end
 
   defp marshal_media(alternatives) do
+    Enum.each(alternatives, &validate_alternative_rendition!/1)
+
     tags =
       alternatives
       |> Enum.map(&AlternativeRendition.to_tag/1)
@@ -256,9 +258,49 @@ defimpl HLS.Playlist.Marshaler, for: HLS.Playlist.Master do
     end)
   end
 
+  defp validate_alternative_rendition!(%AlternativeRendition{} = alt) do
+    required_keys = [:type, :group_id, :name]
+
+    Enum.each(required_keys, fn key ->
+      if Map.get(alt, key) in [nil, ""] do
+        raise ArgumentError,
+              "EXT-X-MEDIA requires #{key} to be set (type=#{inspect(alt.type)}, name=#{inspect(alt.name)})"
+      end
+    end)
+
+    case alt.type do
+      :closed_captions ->
+        if is_nil(alt.instream_id) or alt.instream_id == "" do
+          raise ArgumentError,
+                "EXT-X-MEDIA with TYPE=CLOSED-CAPTIONS requires instream_id"
+        end
+
+        if not is_nil(alt.uri) do
+          raise ArgumentError,
+                "EXT-X-MEDIA with TYPE=CLOSED-CAPTIONS must not include a URI"
+        end
+
+      :audio ->
+        if is_nil(alt.uri) do
+          raise ArgumentError, "EXT-X-MEDIA with TYPE=AUDIO requires uri"
+        end
+
+      :video ->
+        if is_nil(alt.uri) do
+          raise ArgumentError, "EXT-X-MEDIA with TYPE=VIDEO requires uri"
+        end
+
+      :subtitles ->
+        if is_nil(alt.uri) do
+          raise ArgumentError, "EXT-X-MEDIA with TYPE=SUBTITLES requires uri"
+        end
+    end
+  end
+
   defp prepare_attributes({:resolution, {x, y}}), do: {"RESOLUTION", ~c"#{x}x#{y}"}
   defp prepare_attributes({:codecs, codecs}), do: {"CODECS", Enum.join(codecs, ",")}
-  defp prepare_attributes({:type, type}), do: {"TYPE", String.upcase(to_string(type))}
+  defp prepare_attributes({:type, type}),
+    do: {"TYPE", type |> to_string() |> String.upcase() |> String.replace("_", "-")}
   defp prepare_attributes({:uri, uri}), do: {"URI", to_string(uri)}
   defp prepare_attributes({:characteristics, list}), do: {"CHARACTERISTICS", Enum.join(list, ",")}
 

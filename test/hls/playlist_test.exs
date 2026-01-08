@@ -225,6 +225,65 @@ defmodule HLS.PlaylistTest do
       # Verify it contains the expected tags in the marshaled output
       assert String.contains?(marshaled, "#EXT-X-PROGRAM-DATE-TIME:2024-08-19T12:08:16.015Z")
       assert String.contains?(marshaled, "#EXT-X-PROGRAM-DATE-TIME:2024-08-19T12:08:20.015Z")
+
+      lines = String.split(marshaled, "\n")
+
+      lines
+      |> Enum.with_index()
+      |> Enum.filter(fn {line, _idx} -> String.starts_with?(line, "#EXT-X-PROGRAM-DATE-TIME:") end)
+      |> Enum.each(fn {_line, idx} ->
+        assert Enum.at(lines, idx + 1) |> String.starts_with?("#EXTINF:")
+      end)
+    end
+
+    test "segment tag ordering follows RFC 8216", %{playlist: %Media{} = playlist} do
+      {:ok, datetime, _} = DateTime.from_iso8601("2024-08-19T12:08:16.015Z")
+
+      segment =
+        %Segment{
+          duration: 3.0,
+          uri: URI.new!("data/0.ts"),
+          discontinuity: true,
+          program_date_time: datetime,
+          byterange: %{offset: 10, length: 100},
+          init_section: %{uri: "init.mp4", byterange: %{offset: 0, length: 10}},
+          absolute_sequence: 0,
+          relative_sequence: 0
+        }
+
+      playlist = %Media{playlist | segments: [segment], finished: false}
+      marshaled = Playlist.marshal(playlist)
+      lines = String.split(marshaled, "\n")
+
+      disc_idx = Enum.find_index(lines, &(&1 == "#EXT-X-DISCONTINUITY"))
+      map_idx = Enum.find_index(lines, &String.starts_with?(&1, "#EXT-X-MAP:"))
+      pdt_idx = Enum.find_index(lines, &String.starts_with?(&1, "#EXT-X-PROGRAM-DATE-TIME:"))
+      inf_idx = Enum.find_index(lines, &String.starts_with?(&1, "#EXTINF:"))
+      byterange_idx = Enum.find_index(lines, &String.starts_with?(&1, "#EXT-X-BYTERANGE:"))
+      uri_idx = Enum.find_index(lines, &(&1 == "data/0.ts"))
+
+      assert disc_idx < inf_idx
+      assert map_idx < inf_idx
+      assert pdt_idx < inf_idx
+      assert inf_idx < byterange_idx
+      assert byterange_idx < uri_idx
+    end
+
+    test "target duration remains fixed to configured value", %{playlist: %Media{} = playlist} do
+      segments =
+        [
+          %Segment{duration: 3.2, uri: URI.new!("data/0.ts")},
+          %Segment{duration: 2.0, uri: URI.new!("data/1.ts")}
+        ]
+        |> Enum.with_index()
+        |> Enum.map(fn {%Segment{} = seg, index} ->
+          %Segment{seg | absolute_sequence: index, relative_sequence: index}
+        end)
+
+      playlist = %Media{playlist | segments: segments, target_segment_duration: 3.0}
+      marshaled = Playlist.marshal(playlist)
+
+      assert String.contains?(marshaled, "#EXT-X-TARGETDURATION:3")
     end
   end
 
@@ -283,13 +342,13 @@ defmodule HLS.PlaylistTest do
         |> Playlist.marshal()
         |> String.split("\n")
 
-      assert lines == [
-               "#EXTM3U",
-               "#EXT-X-VERSION:7",
-               "#EXT-X-STREAM-INF:BANDWIDTH=1187651,CODECS=\"avc1.42e00a\",SUBTITLES=\"SUBTITLES\"",
-               "muxed_video_480x270.m3u8",
-               "#EXT-X-MEDIA:GROUP-ID=\"SUBTITLES\",NAME=\"test\",TYPE=SUBTITLES,URI=\"subtitles.m3u8\""
-             ]
+    assert lines == [
+             "#EXTM3U",
+             "#EXT-X-VERSION:7",
+             "#EXT-X-MEDIA:GROUP-ID=\"SUBTITLES\",NAME=\"test\",TYPE=SUBTITLES,URI=\"subtitles.m3u8\"",
+             "#EXT-X-STREAM-INF:BANDWIDTH=1187651,CODECS=\"avc1.42e00a\",SUBTITLES=\"SUBTITLES\"",
+             "muxed_video_480x270.m3u8"
+           ]
     end
   end
 
