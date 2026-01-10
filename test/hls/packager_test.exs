@@ -16,7 +16,7 @@ defmodule HLS.PackagerTest do
       {:ok, state} = Packager.new(manifest_uri: uri, max_segments: 3)
 
       # Add segment (returns action to execute)
-      {state, [action]} = Packager.put_segment(state, "video", duration: 5.0)
+      {state, [action]} = put_segment(state, "video", duration: 5.0)
 
       # Execute action (test helper)
       execute_upload_action(action, segment_payload)
@@ -157,6 +157,59 @@ defmodule HLS.PackagerTest do
     HLS.Playlist.unmarshal(content, %HLS.Playlist.Media{uri: playlist_uri})
   end
 
+  defp load_media_content(storage, manifest_uri, playlist_uri) do
+    full_uri = HLS.Playlist.build_absolute_uri(manifest_uri, playlist_uri)
+    {:ok, content} = TestStorage.get(storage, full_uri)
+    content
+  end
+
+  defp load_master_content(storage, manifest_uri) do
+    {:ok, content} = TestStorage.get(storage, manifest_uri)
+    content
+  end
+
+  defp playlist_lines(content) do
+    String.split(content, "\n", trim: true)
+  end
+
+  defp put_segment(state, track_id, opts) when is_list(opts) do
+    track = Map.fetch!(state.tracks, track_id)
+    duration = Keyword.fetch!(opts, :duration)
+
+    pts =
+      Keyword.get_lazy(opts, :pts, fn ->
+        last_segment =
+          track.media_playlist.segments
+          |> Kernel.++(track.pending_playlist.segments)
+          |> Kernel.++(Enum.map(track.pending_segments, & &1.segment))
+          |> List.last()
+
+        case last_segment do
+          nil -> 0
+          segment -> segment.pts + duration_to_ns(segment.duration)
+        end
+      end)
+
+    dts = Keyword.get(opts, :dts)
+
+    Packager.put_segment(state, track_id, duration: duration, pts: pts, dts: dts)
+  end
+
+  defp duration_to_ns(duration) do
+    round(duration * 1_000_000_000)
+  end
+
+  defp add_segments(state, storage, manifest_uri, track_id, count, duration, opts \\ []) do
+    Enum.reduce(1..count, state, fn _i, s ->
+      {s, actions} = put_segment(s, track_id, Keyword.merge([duration: duration], opts))
+      action = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
+      ActionExecutor.execute_action(action, storage, manifest_uri)
+      {s, confirm_actions} = Packager.confirm_upload(s, action.id)
+      ActionExecutor.execute_actions(confirm_actions, storage, manifest_uri)
+      s
+    end)
+  end
+
   # Test setup
   setup do
     {:ok, storage} = TestStorage.start_link()
@@ -193,7 +246,7 @@ defmodule HLS.PackagerTest do
       # Add and sync 3 segments
       {state, _} =
         Enum.reduce(1..3, {state, []}, fn _i, {s, _} ->
-          {s, [action]} = Packager.put_segment(s, "video", duration: 6.0)
+          {s, [action]} = put_segment(s, "video", duration: 6.0)
           ActionExecutor.execute_action(action, storage, manifest_uri)
           {s, actions} = Packager.confirm_upload(s, action.id)
           ActionExecutor.execute_actions(actions, storage, manifest_uri)
@@ -231,10 +284,7 @@ defmodule HLS.PackagerTest do
           target_segment_duration: 6.0
         )
 
-      {state, [action]} = Packager.put_segment(state, "video", duration: 6.0)
-      ActionExecutor.execute_action(action, storage, manifest_uri)
-      {state, actions} = Packager.confirm_upload(state, action.id)
-      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+      state = add_segments(state, storage, manifest_uri, "video", 3, 6.0)
       {_state, actions} = Packager.sync(state, 3)
       ActionExecutor.execute_actions(actions, storage, manifest_uri)
 
@@ -276,14 +326,7 @@ defmodule HLS.PackagerTest do
         )
 
       # Add segments and sync
-      state =
-        Enum.reduce(["video", "audio_en"], state, fn track_id, s ->
-          {s, [action]} = Packager.put_segment(s, track_id, duration: 6.0)
-          ActionExecutor.execute_action(action, storage, manifest_uri)
-          {s, actions} = Packager.confirm_upload(s, action.id)
-          ActionExecutor.execute_actions(actions, storage, manifest_uri)
-          s
-        end)
+      state = add_segments(state, storage, manifest_uri, "video", 3, 6.0)
 
       {_state, actions} = Packager.sync(state, 3)
       ActionExecutor.execute_actions(actions, storage, manifest_uri)
@@ -334,14 +377,7 @@ defmodule HLS.PackagerTest do
           codecs: ["mp4a.40.2"]
         )
 
-      state =
-        Enum.reduce(["video", "audio_en"], state, fn track_id, s ->
-          {s, [action]} = Packager.put_segment(s, track_id, duration: 6.0)
-          ActionExecutor.execute_action(action, storage, manifest_uri)
-          {s, actions} = Packager.confirm_upload(s, action.id)
-          ActionExecutor.execute_actions(actions, storage, manifest_uri)
-          s
-        end)
+      state = add_segments(state, storage, manifest_uri, "video", 3, 6.0)
 
       {_state, actions} = Packager.sync(state, 3)
       ActionExecutor.execute_actions(actions, storage, manifest_uri)
@@ -373,10 +409,7 @@ defmodule HLS.PackagerTest do
           codecs: ["avc1.64001f"]
         )
 
-      {state, [action]} = Packager.put_segment(state, "video", duration: 6.0)
-      ActionExecutor.execute_action(action, storage, manifest_uri)
-      {state, actions} = Packager.confirm_upload(state, action.id)
-      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+      state = add_segments(state, storage, manifest_uri, "video", 3, 6.0)
       {_state, actions} = Packager.sync(state, 3)
       ActionExecutor.execute_actions(actions, storage, manifest_uri)
 
@@ -425,14 +458,7 @@ defmodule HLS.PackagerTest do
           codecs: ["mp4a.40.2"]
         )
 
-      state =
-        Enum.reduce(["video", "audio_en"], state, fn track_id, s ->
-          {s, [action]} = Packager.put_segment(s, track_id, duration: 6.0)
-          ActionExecutor.execute_action(action, storage, manifest_uri)
-          {s, actions} = Packager.confirm_upload(s, action.id)
-          ActionExecutor.execute_actions(actions, storage, manifest_uri)
-          s
-        end)
+      state = add_segments(state, storage, manifest_uri, "video", 3, 6.0)
 
       {_state, actions} = Packager.sync(state, 3)
       ActionExecutor.execute_actions(actions, storage, manifest_uri)
@@ -478,10 +504,7 @@ defmodule HLS.PackagerTest do
           target_segment_duration: 6.0
         )
 
-      {state, [action]} = Packager.put_segment(state, "video", duration: 6.0)
-      ActionExecutor.execute_action(action, storage, manifest_uri)
-      {state, actions} = Packager.confirm_upload(state, action.id)
-      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+      state = add_segments(state, storage, manifest_uri, "video", 3, 6.0)
       {_state, actions} = Packager.sync(state, 3)
       ActionExecutor.execute_actions(actions, storage, manifest_uri)
 
@@ -497,6 +520,54 @@ defmodule HLS.PackagerTest do
       assert media_line =~ "NAME=\"CC1\""
       assert media_line =~ "INSTREAM-ID=\"CC1\""
       refute media_line =~ "URI="
+    end
+  end
+
+  describe "sync readiness helper" do
+    test "sync_ready?/2 ignores alternative renditions by default", %{
+      manifest_uri: manifest_uri
+    } do
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri)
+
+      {state, []} =
+        Packager.add_track(state, "video_a",
+          stream: %VariantStream{
+            bandwidth: 2_000_000,
+            codecs: ["avc1.64001f"]
+          },
+          segment_extension: ".ts",
+          target_segment_duration: 6.0
+        )
+
+      {state, []} =
+        Packager.add_track(state, "video_b",
+          stream: %VariantStream{
+            bandwidth: 1_000_000,
+            codecs: ["avc1.64001f"]
+          },
+          segment_extension: ".ts",
+          target_segment_duration: 6.0
+        )
+
+      {state, []} =
+        Packager.add_track(state, "audio_en",
+          stream: %AlternativeRendition{
+            type: :audio,
+            name: "English",
+            group_id: "audio"
+          },
+          segment_extension: ".ts",
+          target_segment_duration: 6.0,
+          codecs: ["mp4a.40.2"]
+        )
+
+      {state, [action]} = put_segment(state, "video_a", duration: 6.0)
+      {state, _actions} = Packager.confirm_upload(state, action.id)
+
+      {ready?, lagging} = Packager.sync_ready?(state, 1)
+
+      refute ready?
+      assert lagging == ["video_b"]
     end
   end
 
@@ -520,15 +591,15 @@ defmodule HLS.PackagerTest do
 
       {state, _} =
         Enum.reduce(1..total_segments, {state, []}, fn _i, {s, _} ->
-          {s, [action]} = Packager.put_segment(s, "test_track", duration: 1.0)
+          {s, [action]} = put_segment(s, "test_track", duration: 1.0)
           ActionExecutor.execute_action(action, storage, manifest_uri)
           {s, actions} = Packager.confirm_upload(s, action.id)
           ActionExecutor.execute_actions(actions, storage, manifest_uri)
           {s, []}
         end)
 
-      # Sync with large point to move all to media playlist
-      {state, actions} = Packager.sync(state, 10)
+      # Sync with point to move all to media playlist
+      {state, actions} = Packager.sync(state, total_segments)
 
       # Should have delete actions for old segments
       delete_actions = Enum.filter(actions, &match?(%Packager.Action.DeleteSegment{}, &1))
@@ -574,7 +645,7 @@ defmodule HLS.PackagerTest do
 
       {state, _} =
         Enum.reduce(1..segment_count, {state, []}, fn _i, {s, _} ->
-          {s, [action]} = Packager.put_segment(s, "test_track", duration: 6.0)
+          {s, [action]} = put_segment(s, "test_track", duration: 6.0)
           ActionExecutor.execute_action(action, storage, manifest_uri)
           {s, actions} = Packager.confirm_upload(s, action.id)
           ActionExecutor.execute_actions(actions, storage, manifest_uri)
@@ -613,7 +684,7 @@ defmodule HLS.PackagerTest do
       # Add 4 segments
       {state, _} =
         Enum.reduce(1..4, {state, []}, fn _i, {s, _} ->
-          {s, [action]} = Packager.put_segment(s, "test_track", duration: 6.0)
+          {s, [action]} = put_segment(s, "test_track", duration: 6.0)
           ActionExecutor.execute_action(action, storage, manifest_uri, "segment_data")
           {s, actions} = Packager.confirm_upload(s, action.id)
           ActionExecutor.execute_actions(actions, storage, manifest_uri)
@@ -668,7 +739,7 @@ defmodule HLS.PackagerTest do
 
       {state, _} =
         Enum.reduce(1..segment_count, {state, []}, fn _i, {s, _} ->
-          {s, [action]} = Packager.put_segment(s, "test_track", duration: 6.0)
+          {s, [action]} = put_segment(s, "test_track", duration: 6.0)
           ActionExecutor.execute_action(action, storage, manifest_uri)
           {s, actions} = Packager.confirm_upload(s, action.id)
           ActionExecutor.execute_actions(actions, storage, manifest_uri)
@@ -722,7 +793,7 @@ defmodule HLS.PackagerTest do
 
       {state, _} =
         Enum.reduce(1..total_segments, {state, []}, fn _i, {s, _} ->
-          {s, [action]} = Packager.put_segment(s, "test_track", duration: 1.0)
+          {s, [action]} = put_segment(s, "test_track", duration: 1.0)
           ActionExecutor.execute_action(action, storage, manifest_uri)
           {s, actions} = Packager.confirm_upload(s, action.id)
           ActionExecutor.execute_actions(actions, storage, manifest_uri)
@@ -730,7 +801,7 @@ defmodule HLS.PackagerTest do
         end)
 
       # Sync to trigger sliding window
-      {state, actions} = Packager.sync(state, 10)
+      {state, actions} = Packager.sync(state, total_segments)
 
       # Should have segment deletes but NOT init section delete
       segment_deletes = Enum.filter(actions, &match?(%Packager.Action.DeleteSegment{}, &1))
@@ -761,6 +832,42 @@ defmodule HLS.PackagerTest do
       assert length(init_uris) == 1
     end
 
+    test "late track advances past missed discontinuities and resets timing base", %{
+      manifest_uri: manifest_uri,
+      storage: storage
+    } do
+      max_segments = 2
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri, max_segments: max_segments)
+
+      {state, []} =
+        Packager.add_track(state, "test_track",
+          stream: %VariantStream{bandwidth: 1_000_000, codecs: ["avc1.64001e"]},
+          segment_extension: ".ts",
+          target_segment_duration: 1.0
+        )
+
+      state = add_segments(state, storage, manifest_uri, "test_track", 4, 1.0)
+      {state, actions} = Packager.sync(state, 4)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      pdt1 = DateTime.add(state.timeline_reference, 10, :second)
+      pdt2 = DateTime.add(state.timeline_reference, 20, :second)
+      disc1 = %{id: make_ref(), sync_point: 1, pdt_reference: pdt1, timestamp_reference_ns: 10_000_000_000, reason: :manual}
+      disc2 = %{id: make_ref(), sync_point: 2, pdt_reference: pdt2, timestamp_reference_ns: 20_000_000_000, reason: :manual}
+
+      state = %{state | pending_discontinuities: [disc1, disc2]}
+
+      state = add_segments(state, storage, manifest_uri, "test_track", 2, 1.0)
+      {state, actions} = Packager.sync(state, 4)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      track = state.tracks["test_track"]
+      assert MapSet.member?(track.applied_discontinuities, disc1.id)
+      assert MapSet.member?(track.applied_discontinuities, disc2.id)
+      assert track.base_pdt == pdt2
+      assert track.base_timestamp_ns == 20_000_000_000
+    end
+
     test "assigns program date times to every segment when enabled", %{
       manifest_uri: manifest_uri,
       storage: storage
@@ -780,7 +887,7 @@ defmodule HLS.PackagerTest do
 
       {state, _} =
         Enum.reduce(segment_durations, {state, []}, fn duration, {s, _} ->
-          {s, actions} = Packager.put_segment(s, "test_track", duration: duration)
+          {s, actions} = put_segment(s, "test_track", duration: duration)
           upload_action = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
           ActionExecutor.execute_actions(actions, storage, manifest_uri)
           {s, confirm_actions} = Packager.confirm_upload(s, upload_action.id)
@@ -789,7 +896,7 @@ defmodule HLS.PackagerTest do
         end)
 
       # Sync to move segments to media playlist (triggers datetime assignment)
-      {state, actions} = Packager.sync(state, 10)
+      {state, actions} = Packager.sync(state, length(segment_durations))
       ActionExecutor.execute_actions(actions, storage, manifest_uri)
 
       playlist =
@@ -816,13 +923,13 @@ defmodule HLS.PackagerTest do
       duration_pairs = Enum.zip(playlist.segments, tl(playlist.segments))
 
       for {{dt1, dt2}, {seg1, _seg2}} <- Enum.zip(datetime_pairs, duration_pairs) do
-        expected_diff = round(seg1.duration)
-        actual_diff = DateTime.diff(dt2, dt1, :second)
+        expected_diff = duration_to_ns(seg1.duration)
+        actual_diff = DateTime.diff(dt2, dt1, :nanosecond)
         assert actual_diff == expected_diff
       end
     end
 
-    test "does not assign program date times when disabled", %{
+    test "assigns program date times even when max_segments is nil", %{
       manifest_uri: manifest_uri,
       storage: storage
     } do
@@ -838,7 +945,7 @@ defmodule HLS.PackagerTest do
       # Add segments
       {state, _} =
         Enum.reduce(1..3, {state, []}, fn _i, {s, _} ->
-          {s, [action]} = Packager.put_segment(s, "test_track", duration: 2.0)
+          {s, [action]} = put_segment(s, "test_track", duration: 2.0)
           ActionExecutor.execute_action(action, storage, manifest_uri)
           {s, actions} = Packager.confirm_upload(s, action.id)
           ActionExecutor.execute_actions(actions, storage, manifest_uri)
@@ -846,7 +953,7 @@ defmodule HLS.PackagerTest do
         end)
 
       # Sync
-      {state, actions} = Packager.sync(state, 10)
+      {state, actions} = Packager.sync(state, 3)
       ActionExecutor.execute_actions(actions, storage, manifest_uri)
 
       playlist =
@@ -860,8 +967,8 @@ defmodule HLS.PackagerTest do
         playlist.segments
         |> Enum.filter(&(&1.program_date_time != nil))
 
-      assert length(segments_with_datetime) == 0,
-             "No segments should have program_date_time when max_segments is nil"
+      assert length(segments_with_datetime) == length(playlist.segments),
+             "All segments should have program_date_time when enabled"
     end
   end
 
@@ -880,7 +987,7 @@ defmodule HLS.PackagerTest do
         )
 
       # Add segment that exceeds target
-      {_state, actions} = Packager.put_segment(state, "video", duration: 7.5)
+      {_state, actions} = put_segment(state, "video", duration: 7.5)
 
       # Should have upload action and warning
       upload_action = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
@@ -895,7 +1002,7 @@ defmodule HLS.PackagerTest do
       assert warning.details.track_id == "video"
     end
 
-    test "warns about timestamp drift across variant streams", %{
+    test "warns when mandatory tracks are misaligned at sync point", %{
       manifest_uri: manifest_uri,
       storage: storage
     } do
@@ -924,13 +1031,13 @@ defmodule HLS.PackagerTest do
       # After second segment, drift = 2 seconds
 
       # Segment 1
-      {state, actions} = Packager.put_segment(state, "video_high", duration: 3.0)
+      {state, actions} = put_segment(state, "video_high", duration: 3.0)
       upload = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
       ActionExecutor.execute_action(upload, storage, manifest_uri)
       {state, actions} = Packager.confirm_upload(state, upload.id)
       ActionExecutor.execute_actions(actions, storage, manifest_uri)
 
-      {state, actions} = Packager.put_segment(state, "video_low", duration: 1.0)
+      {state, actions} = put_segment(state, "video_low", duration: 1.0)
       upload = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
       ActionExecutor.execute_action(upload, storage, manifest_uri)
       {state, actions} = Packager.confirm_upload(state, upload.id)
@@ -940,44 +1047,40 @@ defmodule HLS.PackagerTest do
       ActionExecutor.execute_actions(actions, storage, manifest_uri)
 
       # Segment 2
-      {state, actions} = Packager.put_segment(state, "video_high", duration: 3.0)
+      {state, actions} = put_segment(state, "video_high", duration: 3.0)
       upload = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
       ActionExecutor.execute_action(upload, storage, manifest_uri)
       {state, actions} = Packager.confirm_upload(state, upload.id)
       ActionExecutor.execute_actions(actions, storage, manifest_uri)
 
-      {state, actions} = Packager.put_segment(state, "video_low", duration: 1.0)
+      {state, actions} =
+        put_segment(state, "video_low",
+          duration: 1.0,
+          pts: 1_400_000_000
+        )
       upload = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
       ActionExecutor.execute_action(upload, storage, manifest_uri)
       {state, actions} = Packager.confirm_upload(state, upload.id)
       ActionExecutor.execute_actions(actions, storage, manifest_uri)
 
-      # Sync should detect timestamp drift at position 1 (second segment)
+      # Sync should warn about mandatory misalignment at position 2
       {_state, actions} = Packager.sync(state, 2)
 
       warnings =
         Enum.filter(
           actions,
-          &match?(%Packager.Action.Warning{code: :timestamp_drift_detected}, &1)
+          &match?(%Packager.Action.Warning{code: :mandatory_track_timing_mismatch}, &1)
         )
 
       assert length(warnings) > 0
-
-      warning = hd(warnings)
-      assert warning.severity == :error
-      assert warning.code == :timestamp_drift_detected
-      assert String.contains?(warning.message, "misaligned timestamps")
-      assert warning.details.position == 1
     end
 
-    test "warns about unsynchronized discontinuities", %{
+    test "warns and marks discontinuity on timing discontinuity", %{
       manifest_uri: manifest_uri,
       storage: storage
     } do
-      max_segments = 5
-      {:ok, state} = Packager.new(manifest_uri: manifest_uri, max_segments: max_segments)
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri)
 
-      # Add two tracks
       {state, []} =
         Packager.add_track(state, "video",
           stream: %VariantStream{bandwidth: 2_000_000, codecs: []},
@@ -985,42 +1088,21 @@ defmodule HLS.PackagerTest do
           target_segment_duration: 2.0
         )
 
-      {state, []} =
-        Packager.add_track(state, "audio",
-          stream: %VariantStream{bandwidth: 128_000, codecs: []},
-          segment_extension: ".ts",
-          target_segment_duration: 2.0
-        )
-
-      # Add different number of segments to each track
-      {state, actions} = Packager.put_segment(state, "video", duration: 2.0)
+      {state, actions} = put_segment(state, "video", duration: 2.0, pts: 0)
       upload = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
       ActionExecutor.execute_action(upload, storage, manifest_uri)
       {state, actions} = Packager.confirm_upload(state, upload.id)
       ActionExecutor.execute_actions(actions, storage, manifest_uri)
 
-      {state, actions} = Packager.put_segment(state, "audio", duration: 2.0)
-      upload = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
-      ActionExecutor.execute_action(upload, storage, manifest_uri)
-      {state, actions} = Packager.confirm_upload(state, upload.id)
-      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+      {state, actions} = put_segment(state, "video", duration: 2.0, pts: 3_000_000_000)
 
-      # Add another segment to video only
-      {state, actions} = Packager.put_segment(state, "video", duration: 2.0)
-      upload = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
-      ActionExecutor.execute_action(upload, storage, manifest_uri)
-      {state, actions} = Packager.confirm_upload(state, upload.id)
-      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+      warning =
+        Enum.find(actions, &match?(%Packager.Action.Warning{code: :timing_discontinuity_detected}, &1))
 
-      # Now call discontinue - should warn about misalignment
-      {_state, warnings} = Packager.discontinue(state)
+      assert warning != nil
 
-      assert length(warnings) == 1
-      warning = hd(warnings)
-      assert warning.severity == :warning
-      assert warning.code == :unsynchronized_discontinuity
-      assert warning.details.segment_counts["video"] == 2
-      assert warning.details.segment_counts["audio"] == 1
+      [pending | _] = state.tracks["video"].pending_segments
+      assert pending.segment.discontinuity == true
     end
 
     test "warns about tracks behind sync point", %{manifest_uri: manifest_uri, storage: storage} do
@@ -1044,7 +1126,7 @@ defmodule HLS.PackagerTest do
       # Add 3 segments to video
       state =
         Enum.reduce(1..3, state, fn _i, s ->
-          {s, actions} = Packager.put_segment(s, "video", duration: 2.0)
+          {s, actions} = put_segment(s, "video", duration: 2.0)
           upload = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
           ActionExecutor.execute_action(upload, storage, manifest_uri)
           {s, actions} = Packager.confirm_upload(s, upload.id)
@@ -1053,7 +1135,7 @@ defmodule HLS.PackagerTest do
         end)
 
       # Add only 1 segment to audio
-      {state, actions} = Packager.put_segment(state, "audio", duration: 2.0)
+      {state, actions} = put_segment(state, "audio", duration: 2.0)
       upload = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
       ActionExecutor.execute_action(upload, storage, manifest_uri)
       {state, actions} = Packager.confirm_upload(state, upload.id)
@@ -1065,14 +1147,14 @@ defmodule HLS.PackagerTest do
       warnings =
         Enum.filter(
           actions,
-          &match?(%Packager.Action.Warning{code: :track_behind_sync_point}, &1)
+          &match?(%Packager.Action.Warning{code: :mandatory_track_behind_sync_point}, &1)
         )
 
       assert length(warnings) == 1
 
       warning = hd(warnings)
       assert warning.severity == :warning
-      assert warning.code == :track_behind_sync_point
+      assert warning.code == :mandatory_track_behind_sync_point
       assert warning.details.track_id == "audio"
       assert warning.details.available_segments == 1
       assert warning.details.sync_point == 3
@@ -1093,7 +1175,7 @@ defmodule HLS.PackagerTest do
         )
 
       # Add segment within target
-      {_state, actions} = Packager.put_segment(state, "video", duration: 5.5)
+      {_state, actions} = put_segment(state, "video", duration: 5.5)
 
       warnings = Enum.filter(actions, &match?(%Packager.Action.Warning{}, &1))
       assert length(warnings) == 0
@@ -1124,7 +1206,7 @@ defmodule HLS.PackagerTest do
       # Add same number of segments to both tracks
       state =
         Enum.reduce(["video", "audio"], state, fn track_id, s ->
-          {s, actions} = Packager.put_segment(s, track_id, duration: 2.0)
+          {s, actions} = put_segment(s, track_id, duration: 2.0)
           upload = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
           ActionExecutor.execute_action(upload, storage, manifest_uri)
           {s, actions} = Packager.confirm_upload(s, upload.id)
@@ -1153,7 +1235,7 @@ defmodule HLS.PackagerTest do
       # Add and sync segments
       {state, _} =
         Enum.reduce(1..3, {state, []}, fn _i, {s, _} ->
-          {s, [action]} = Packager.put_segment(s, "video", duration: 6.0)
+          {s, [action]} = put_segment(s, "video", duration: 6.0)
           ActionExecutor.execute_action(action, storage, manifest_uri)
           {s, actions} = Packager.confirm_upload(s, action.id)
           ActionExecutor.execute_actions(actions, storage, manifest_uri)
@@ -1188,10 +1270,7 @@ defmodule HLS.PackagerTest do
           target_segment_duration: 6.0
         )
 
-      {state, [action]} = Packager.put_segment(state, "video", duration: 6.0)
-      ActionExecutor.execute_action(action, storage, manifest_uri)
-      {state, actions} = Packager.confirm_upload(state, action.id)
-      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+      state = add_segments(state, storage, manifest_uri, "video", 3, 6.0)
       {_state, actions} = Packager.sync(state, 3)
       ActionExecutor.execute_actions(actions, storage, manifest_uri)
 
@@ -1222,7 +1301,7 @@ defmodule HLS.PackagerTest do
 
       {state, _media_contents} =
         Enum.reduce(durations, {state, []}, fn duration, {s, contents} ->
-          {s, [action]} = Packager.put_segment(s, "video", duration: duration)
+          {s, [action]} = put_segment(s, "video", duration: duration)
           ActionExecutor.execute_action(action, storage, manifest_uri)
           {s, actions} = Packager.confirm_upload(s, action.id)
           ActionExecutor.execute_actions(actions, storage, manifest_uri)
@@ -1239,7 +1318,7 @@ defmodule HLS.PackagerTest do
           {s, contents ++ [content]}
         end)
 
-      {_state, actions} = Packager.sync(state, 10)
+      {_state, actions} = Packager.sync(state, length(durations))
       ActionExecutor.execute_actions(actions, storage, manifest_uri)
 
       # Get final media playlist
@@ -1276,14 +1355,14 @@ defmodule HLS.PackagerTest do
 
       {state, _} =
         Enum.reduce(valid_durations, {state, []}, fn duration, {s, _} ->
-          {s, [action]} = Packager.put_segment(s, "video", duration: duration)
+          {s, [action]} = put_segment(s, "video", duration: duration)
           ActionExecutor.execute_action(action, storage, manifest_uri)
           {s, actions} = Packager.confirm_upload(s, action.id)
           ActionExecutor.execute_actions(actions, storage, manifest_uri)
           {s, []}
         end)
 
-      {state, actions} = Packager.sync(state, 10)
+      {state, actions} = Packager.sync(state, length(valid_durations))
       ActionExecutor.execute_actions(actions, storage, manifest_uri)
 
       playlist =
@@ -1314,7 +1393,7 @@ defmodule HLS.PackagerTest do
 
       {_state, media_sequences} =
         Enum.reduce(1..10, {state, media_sequences}, fn _i, {s, seqs} ->
-          {s, [action]} = Packager.put_segment(s, "video", duration: 2.0)
+          {s, [action]} = put_segment(s, "video", duration: 2.0)
           ActionExecutor.execute_action(action, storage, manifest_uri)
           {s, actions} = Packager.confirm_upload(s, action.id)
           ActionExecutor.execute_actions(actions, storage, manifest_uri)
@@ -1348,7 +1427,7 @@ defmodule HLS.PackagerTest do
         )
 
       # Add segment
-      {state, [action]} = Packager.put_segment(state, "video", duration: 2.0)
+      {state, [action]} = put_segment(state, "video", duration: 2.0)
       ActionExecutor.execute_action(action, storage, manifest_uri)
       {state, actions} = Packager.confirm_upload(state, action.id)
       ActionExecutor.execute_actions(actions, storage, manifest_uri)
@@ -1363,7 +1442,7 @@ defmodule HLS.PackagerTest do
       {state, []} = Packager.discontinue(state)
 
       # Add segment with discontinuity
-      {state, [action]} = Packager.put_segment(state, "video", duration: 2.0)
+      {state, [action]} = put_segment(state, "video", duration: 2.0)
       ActionExecutor.execute_action(action, storage, manifest_uri)
       {state, actions} = Packager.confirm_upload(state, action.id)
       ActionExecutor.execute_actions(actions, storage, manifest_uri)
@@ -1379,7 +1458,7 @@ defmodule HLS.PackagerTest do
       # Add more segments to trigger sliding window removal of discontinuity segment
       {state, _} =
         Enum.reduce(1..4, {state, []}, fn _i, {s, _} ->
-          {s, [action]} = Packager.put_segment(s, "video", duration: 2.0)
+          {s, [action]} = put_segment(s, "video", duration: 2.0)
           ActionExecutor.execute_action(action, storage, manifest_uri)
           {s, actions} = Packager.confirm_upload(s, action.id)
           ActionExecutor.execute_actions(actions, storage, manifest_uri)
@@ -1412,7 +1491,7 @@ defmodule HLS.PackagerTest do
         )
 
       # Add normal segment
-      {state, [action]} = Packager.put_segment(state, "video", duration: 2.0)
+      {state, [action]} = put_segment(state, "video", duration: 2.0)
       ActionExecutor.execute_action(action, storage, manifest_uri)
       {state, actions} = Packager.confirm_upload(state, action.id)
       ActionExecutor.execute_actions(actions, storage, manifest_uri)
@@ -1424,7 +1503,7 @@ defmodule HLS.PackagerTest do
       discontinuity_reference = state.timeline_reference
 
       # Add segment with discontinuity
-      {state, [action]} = Packager.put_segment(state, "video", duration: 2.0)
+      {state, [action]} = put_segment(state, "video", duration: 2.0)
       ActionExecutor.execute_action(action, storage, manifest_uri)
       {state, actions} = Packager.confirm_upload(state, action.id)
       ActionExecutor.execute_actions(actions, storage, manifest_uri)
@@ -1460,7 +1539,7 @@ defmodule HLS.PackagerTest do
           target_segment_duration: 2.0
         )
 
-      {live_state, [action]} = Packager.put_segment(live_state, "video", duration: 2.0)
+      {live_state, [action]} = put_segment(live_state, "video", duration: 2.0)
       ActionExecutor.execute_action(action, storage, manifest_uri)
       {live_state, actions} = Packager.confirm_upload(live_state, action.id)
       ActionExecutor.execute_actions(actions, storage, manifest_uri)
@@ -1486,7 +1565,7 @@ defmodule HLS.PackagerTest do
           target_segment_duration: 2.0
         )
 
-      {vod_state, [action]} = Packager.put_segment(vod_state, "video", duration: 2.0)
+      {vod_state, [action]} = put_segment(vod_state, "video", duration: 2.0)
       ActionExecutor.execute_action(action, storage, manifest_uri)
       {vod_state, actions} = Packager.confirm_upload(vod_state, action.id)
       ActionExecutor.execute_actions(actions, storage, manifest_uri)
@@ -1534,12 +1613,12 @@ defmodule HLS.PackagerTest do
       {state, _} =
         Enum.reduce(1..4, {state, []}, fn _i, {s, _} ->
           # Add to both tracks
-          {s, [action1]} = Packager.put_segment(s, "video_high", duration: 2.0)
+          {s, [action1]} = put_segment(s, "video_high", duration: 2.0)
           ActionExecutor.execute_action(action1, storage, manifest_uri)
           {s, actions1} = Packager.confirm_upload(s, action1.id)
           ActionExecutor.execute_actions(actions1, storage, manifest_uri)
 
-          {s, [action2]} = Packager.put_segment(s, "video_low", duration: 2.0)
+          {s, [action2]} = put_segment(s, "video_low", duration: 2.0)
           ActionExecutor.execute_action(action2, storage, manifest_uri)
           {s, actions2} = Packager.confirm_upload(s, action2.id)
           ActionExecutor.execute_actions(actions2, storage, manifest_uri)
@@ -1601,7 +1680,7 @@ defmodule HLS.PackagerTest do
       # Add initial segments
       state =
         Enum.reduce(["video", "audio"], state, fn track_id, s ->
-          {s, [action]} = Packager.put_segment(s, track_id, duration: 2.0)
+          {s, [action]} = put_segment(s, track_id, duration: 2.0)
           ActionExecutor.execute_action(action, storage, manifest_uri)
           {s, actions} = Packager.confirm_upload(s, action.id)
           ActionExecutor.execute_actions(actions, storage, manifest_uri)
@@ -1629,7 +1708,7 @@ defmodule HLS.PackagerTest do
       # Add segments with discontinuity
       state =
         Enum.reduce(["video", "audio"], state, fn track_id, s ->
-          {s, [action]} = Packager.put_segment(s, track_id, duration: 2.0)
+          {s, [action]} = put_segment(s, track_id, duration: 2.0)
           ActionExecutor.execute_action(action, storage, manifest_uri)
           {s, actions} = Packager.confirm_upload(s, action.id)
           ActionExecutor.execute_actions(actions, storage, manifest_uri)
@@ -1644,7 +1723,7 @@ defmodule HLS.PackagerTest do
         Enum.reduce(1..4, {state, []}, fn _i, {s, _} ->
           s =
             Enum.reduce(["video", "audio"], s, fn track_id, inner_s ->
-              {inner_s, [action]} = Packager.put_segment(inner_s, track_id, duration: 2.0)
+              {inner_s, [action]} = put_segment(inner_s, track_id, duration: 2.0)
               ActionExecutor.execute_action(action, storage, manifest_uri)
               {inner_s, actions} = Packager.confirm_upload(inner_s, action.id)
               ActionExecutor.execute_actions(actions, storage, manifest_uri)
@@ -1694,7 +1773,7 @@ defmodule HLS.PackagerTest do
       # Add segments and capture state at each point
       {_state, playlist_states} =
         Enum.reduce(1..10, {state, playlist_states}, fn _i, {s, states} ->
-          {s, [action]} = Packager.put_segment(s, "video", duration: 2.0)
+          {s, [action]} = put_segment(s, "video", duration: 2.0)
           ActionExecutor.execute_action(action, storage, manifest_uri)
           {s, actions} = Packager.confirm_upload(s, action.id)
           ActionExecutor.execute_actions(actions, storage, manifest_uri)
@@ -1754,6 +1833,602 @@ defmodule HLS.PackagerTest do
 
       assert final_state.media_sequence > 0,
              "Media sequence should increment as segments slide out"
+    end
+
+    test "master and media playlists do not mix tag types", %{
+      manifest_uri: manifest_uri,
+      storage: storage
+    } do
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri)
+
+      {state, []} =
+        Packager.add_track(state, "video",
+          stream: %VariantStream{bandwidth: 1_000_000, codecs: []},
+          segment_extension: ".ts",
+          target_segment_duration: 6.0
+        )
+
+      state = add_segments(state, storage, manifest_uri, "video", 3, 6.0)
+      {state, actions} = Packager.sync(state, 3)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      master_content = load_master_content(storage, manifest_uri)
+      media_content =
+        load_media_content(storage, manifest_uri, state.tracks["video"].media_playlist.uri)
+
+      master_forbidden = [
+        "#EXTINF",
+        "#EXT-X-TARGETDURATION",
+        "#EXT-X-MEDIA-SEQUENCE",
+        "#EXT-X-DISCONTINUITY",
+        "#EXT-X-BYTERANGE",
+        "#EXT-X-MAP",
+        "#EXT-X-PROGRAM-DATE-TIME"
+      ]
+
+      media_forbidden = [
+        "#EXT-X-STREAM-INF",
+        "#EXT-X-MEDIA:",
+        "#EXT-X-I-FRAME-STREAM-INF",
+        "#EXT-X-SESSION-DATA",
+        "#EXT-X-SESSION-KEY"
+      ]
+
+      Enum.each(master_forbidden, fn tag ->
+        refute String.contains?(master_content, tag),
+               "Master playlist must not include media tags: #{tag}"
+      end)
+
+      Enum.each(media_forbidden, fn tag ->
+        refute String.contains?(media_content, tag),
+               "Media playlist must not include master tags: #{tag}"
+      end)
+    end
+
+    test "tags are uppercase", %{manifest_uri: manifest_uri, storage: storage} do
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri)
+
+      {state, []} =
+        Packager.add_track(state, "video",
+          stream: %VariantStream{bandwidth: 1_000_000, codecs: []},
+          segment_extension: ".ts",
+          target_segment_duration: 6.0
+        )
+
+      state = add_segments(state, storage, manifest_uri, "video", 3, 6.0)
+      {_state, actions} = Packager.sync(state, 3)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      master_lines = load_master_content(storage, manifest_uri) |> playlist_lines()
+      media_lines =
+        load_media_content(storage, manifest_uri, state.tracks["video"].media_playlist.uri)
+        |> playlist_lines()
+
+      assert Enum.all?(master_lines, fn line ->
+               not String.starts_with?(line, "#ext") and not String.starts_with?(line, "#Ext")
+             end)
+
+      assert Enum.all?(media_lines, fn line ->
+               not String.starts_with?(line, "#ext") and not String.starts_with?(line, "#Ext")
+             end)
+    end
+
+    test "attribute lists do not include whitespace around separators", %{
+      manifest_uri: manifest_uri,
+      storage: storage
+    } do
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri)
+
+      {state, []} =
+        Packager.add_track(state, "video",
+          stream: %VariantStream{bandwidth: 1_000_000, codecs: ["avc1.64001f"]},
+          segment_extension: ".ts",
+          target_segment_duration: 6.0
+        )
+
+      state = add_segments(state, storage, manifest_uri, "video", 3, 6.0)
+      {_state, actions} = Packager.sync(state, 3)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      master_lines = load_master_content(storage, manifest_uri) |> playlist_lines()
+
+      master_lines
+      |> Enum.filter(fn line ->
+        String.starts_with?(line, "#EXT-X-STREAM-INF:") or
+          String.starts_with?(line, "#EXT-X-MEDIA:")
+      end)
+      |> Enum.each(fn line ->
+        refute String.contains?(line, ", "),
+               "Attribute lists must not include whitespace after commas"
+
+        refute String.contains?(line, " ="),
+               "Attribute lists must not include whitespace before ="
+
+        refute String.contains?(line, "= "),
+               "Attribute lists must not include whitespace after ="
+      end)
+    end
+
+    test "EXTINF appears for each media segment", %{
+      manifest_uri: manifest_uri,
+      storage: storage
+    } do
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri)
+
+      {state, []} =
+        Packager.add_track(state, "video",
+          stream: %VariantStream{bandwidth: 1_000_000, codecs: []},
+          segment_extension: ".ts",
+          target_segment_duration: 6.0
+        )
+
+      state = add_segments(state, storage, manifest_uri, "video", 3, 6.0)
+      {state, actions} = Packager.sync(state, 3)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      media_lines =
+        load_media_content(storage, manifest_uri, state.tracks["video"].media_playlist.uri)
+        |> playlist_lines()
+
+      segment_lines = Enum.filter(media_lines, fn line -> line != "" and not String.starts_with?(line, "#") end)
+      inf_lines = Enum.filter(media_lines, &String.starts_with?(&1, "#EXTINF:"))
+
+      assert length(segment_lines) == length(inf_lines),
+             "Each segment URI must have a corresponding EXTINF line"
+    end
+
+    test "media sequence tag appears before the first segment", %{
+      manifest_uri: manifest_uri,
+      storage: storage
+    } do
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri)
+
+      {state, []} =
+        Packager.add_track(state, "video",
+          stream: %VariantStream{bandwidth: 1_000_000, codecs: []},
+          segment_extension: ".ts",
+          target_segment_duration: 6.0
+        )
+
+      state = add_segments(state, storage, manifest_uri, "video", 2, 6.0)
+      {state, actions} = Packager.sync(state, 2)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      media_lines =
+        load_media_content(storage, manifest_uri, state.tracks["video"].media_playlist.uri)
+        |> playlist_lines()
+
+      media_seq_idx = Enum.find_index(media_lines, &String.starts_with?(&1, "#EXT-X-MEDIA-SEQUENCE:"))
+      first_segment_idx = Enum.find_index(media_lines, fn line -> not String.starts_with?(line, "#") end)
+
+      assert media_seq_idx != nil
+      assert first_segment_idx != nil
+      assert media_seq_idx < first_segment_idx
+    end
+
+    test "discontinuity sequence appears before discontinuity tags", %{
+      manifest_uri: manifest_uri,
+      storage: storage
+    } do
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri)
+
+      {state, []} =
+        Packager.add_track(state, "video",
+          stream: %VariantStream{bandwidth: 1_000_000, codecs: []},
+          segment_extension: ".ts",
+          target_segment_duration: 2.0
+        )
+
+      {state, actions} = put_segment(state, "video", duration: 2.0, pts: 0)
+      upload = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
+      ActionExecutor.execute_action(upload, storage, manifest_uri)
+      {state, actions} = Packager.confirm_upload(state, upload.id)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      {state, actions} = put_segment(state, "video", duration: 2.0, pts: 5_000_000_000)
+      upload = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
+      ActionExecutor.execute_action(upload, storage, manifest_uri)
+      {state, actions} = Packager.confirm_upload(state, upload.id)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      {state, actions} = Packager.sync(state, 2)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      media_lines =
+        load_media_content(storage, manifest_uri, state.tracks["video"].media_playlist.uri)
+        |> playlist_lines()
+
+      disc_seq_idx =
+        Enum.find_index(media_lines, &String.starts_with?(&1, "#EXT-X-DISCONTINUITY-SEQUENCE:"))
+
+      disc_idx = Enum.find_index(media_lines, &(&1 == "#EXT-X-DISCONTINUITY"))
+
+      first_segment_idx = Enum.find_index(media_lines, fn line -> not String.starts_with?(line, "#") end)
+
+      assert disc_seq_idx != nil
+      assert disc_idx != nil
+      assert disc_seq_idx < first_segment_idx
+      assert disc_seq_idx < disc_idx
+    end
+
+    test "EXT-X-MAP appears before the first segment in fMP4 playlists", %{
+      manifest_uri: manifest_uri,
+      storage: storage
+    } do
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri)
+
+      {state, []} =
+        Packager.add_track(state, "video",
+          stream: %VariantStream{bandwidth: 1_000_000, codecs: []},
+          segment_extension: ".m4s",
+          target_segment_duration: 2.0
+        )
+
+      {state, [init_action]} = Packager.put_init_section(state, "video")
+      ActionExecutor.execute_action(init_action, storage, manifest_uri, "init_data")
+      {state, []} = Packager.confirm_init_upload(state, init_action.id)
+
+      {state, actions} = put_segment(state, "video", duration: 2.0, pts: 0)
+      upload = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
+      ActionExecutor.execute_action(upload, storage, manifest_uri)
+      {state, actions} = Packager.confirm_upload(state, upload.id)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      {state, actions} = Packager.sync(state, 1)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      media_lines =
+        load_media_content(storage, manifest_uri, state.tracks["video"].media_playlist.uri)
+        |> playlist_lines()
+
+      map_idx = Enum.find_index(media_lines, &String.starts_with?(&1, "#EXT-X-MAP:"))
+      first_segment_idx = Enum.find_index(media_lines, fn line -> not String.starts_with?(line, "#") end)
+
+      assert map_idx != nil
+      assert first_segment_idx != nil
+      assert map_idx < first_segment_idx
+    end
+
+    test "program date time uses ISO 8601 with timezone and fractional seconds", %{
+      manifest_uri: manifest_uri,
+      storage: storage
+    } do
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri)
+
+      {state, []} =
+        Packager.add_track(state, "video",
+          stream: %VariantStream{bandwidth: 1_000_000, codecs: []},
+          segment_extension: ".ts",
+          target_segment_duration: 2.0
+        )
+
+      {state, actions} = put_segment(state, "video", duration: 2.0, pts: 0)
+      upload = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
+      ActionExecutor.execute_action(upload, storage, manifest_uri)
+      {state, actions} = Packager.confirm_upload(state, upload.id)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      {state, actions} = Packager.sync(state, 1)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      media_lines =
+        load_media_content(storage, manifest_uri, state.tracks["video"].media_playlist.uri)
+        |> playlist_lines()
+
+      pdt_line =
+        Enum.find(media_lines, &String.starts_with?(&1, "#EXT-X-PROGRAM-DATE-TIME:"))
+
+      assert pdt_line != nil
+
+      assert pdt_line =~
+               ~r/^#EXT-X-PROGRAM-DATE-TIME:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3,6}(Z|[+-]\d{2}:\d{2})$/
+    end
+
+    test "CODECS includes all codecs across renditions", %{
+      manifest_uri: manifest_uri,
+      storage: storage
+    } do
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri)
+
+      {state, []} =
+        Packager.add_track(state, "video",
+          stream: %VariantStream{
+            bandwidth: 2_000_000,
+            codecs: ["avc1.64001f"],
+            audio: "audio-group"
+          },
+          segment_extension: ".ts",
+          target_segment_duration: 6.0
+        )
+
+      {state, []} =
+        Packager.add_track(state, "audio_en",
+          stream: %AlternativeRendition{
+            type: :audio,
+            group_id: "audio-group",
+            name: "English"
+          },
+          segment_extension: ".ts",
+          target_segment_duration: 6.0,
+          codecs: ["mp4a.40.2"]
+        )
+
+      state = add_segments(state, storage, manifest_uri, "video", 3, 6.0)
+      {_state, actions} = Packager.sync(state, 3)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      master_content = load_master_content(storage, manifest_uri)
+      assert master_content =~ ~s(CODECS="avc1.64001f,mp4a.40.2")
+    end
+
+    test "sync does not write playlists when timestamps are misaligned", %{
+      manifest_uri: manifest_uri,
+      storage: storage
+    } do
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri)
+
+      {state, []} =
+        Packager.add_track(state, "video_high",
+          stream: %VariantStream{bandwidth: 2_000_000, codecs: []},
+          segment_extension: ".ts",
+          target_segment_duration: 2.0
+        )
+
+      {state, []} =
+        Packager.add_track(state, "video_low",
+          stream: %VariantStream{bandwidth: 500_000, codecs: []},
+          segment_extension: ".ts",
+          target_segment_duration: 2.0
+        )
+
+      state = add_segments(state, storage, manifest_uri, "video_high", 1, 2.0)
+      state = add_segments(state, storage, manifest_uri, "video_low", 1, 2.0)
+
+      {state, actions} = put_segment(state, "video_high", duration: 2.0, pts: 4_000_000_000)
+      upload = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
+      ActionExecutor.execute_action(upload, storage, manifest_uri)
+      {state, actions} = Packager.confirm_upload(state, upload.id)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      {state, actions} = put_segment(state, "video_low", duration: 2.0, pts: 2_000_000_000)
+      upload = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
+      ActionExecutor.execute_action(upload, storage, manifest_uri)
+      {state, actions} = Packager.confirm_upload(state, upload.id)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      {_state, actions} = Packager.sync(state, 2)
+
+      refute Enum.any?(actions, &match?(%Packager.Action.WritePlaylist{}, &1)),
+             "Sync must not write playlists when mandatory tracks are misaligned"
+    end
+
+    test "discontinuity tags align across variant playlists", %{
+      manifest_uri: manifest_uri,
+      storage: storage
+    } do
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri)
+
+      {state, []} =
+        Packager.add_track(state, "video",
+          stream: %VariantStream{bandwidth: 2_000_000, codecs: []},
+          segment_extension: ".ts",
+          target_segment_duration: 2.0
+        )
+
+      {state, []} =
+        Packager.add_track(state, "audio",
+          stream: %VariantStream{bandwidth: 128_000, codecs: []},
+          segment_extension: ".ts",
+          target_segment_duration: 2.0
+        )
+
+      state = add_segments(state, storage, manifest_uri, "video", 1, 2.0)
+      state = add_segments(state, storage, manifest_uri, "audio", 1, 2.0)
+
+      {state, actions} = put_segment(state, "video", duration: 2.0, pts: 5_000_000_000)
+      upload = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
+      ActionExecutor.execute_action(upload, storage, manifest_uri)
+      {state, actions} = Packager.confirm_upload(state, upload.id)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      {state, actions} = put_segment(state, "audio", duration: 2.0, pts: 5_000_000_000)
+      upload = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
+      ActionExecutor.execute_action(upload, storage, manifest_uri)
+      {state, actions} = Packager.confirm_upload(state, upload.id)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      {state, actions} = Packager.sync(state, 2)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      video_lines =
+        load_media_content(storage, manifest_uri, state.tracks["video"].media_playlist.uri)
+        |> playlist_lines()
+
+      audio_lines =
+        load_media_content(storage, manifest_uri, state.tracks["audio"].media_playlist.uri)
+        |> playlist_lines()
+
+      video_disc_idx = Enum.find_index(video_lines, &String.starts_with?(&1, "#EXT-X-DISCONTINUITY"))
+      audio_disc_idx = Enum.find_index(audio_lines, &String.starts_with?(&1, "#EXT-X-DISCONTINUITY"))
+
+      assert video_disc_idx != nil
+      assert audio_disc_idx != nil
+
+      video_segment_idxs =
+        video_lines
+        |> Enum.with_index()
+        |> Enum.filter(fn {line, _} -> line != "" and not String.starts_with?(line, "#") end)
+        |> Enum.map(&elem(&1, 1))
+
+      audio_segment_idxs =
+        audio_lines
+        |> Enum.with_index()
+        |> Enum.filter(fn {line, _} -> line != "" and not String.starts_with?(line, "#") end)
+        |> Enum.map(&elem(&1, 1))
+
+      assert Enum.at(video_segment_idxs, 1) > video_disc_idx
+      assert Enum.at(audio_segment_idxs, 1) > audio_disc_idx
+    end
+
+    test "variant playlists share target duration", %{
+      manifest_uri: manifest_uri,
+      storage: storage
+    } do
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri)
+
+      {state, []} =
+        Packager.add_track(state, "video_high",
+          stream: %VariantStream{bandwidth: 2_000_000, codecs: []},
+          segment_extension: ".ts",
+          target_segment_duration: 2.0
+        )
+
+      {state, []} =
+        Packager.add_track(state, "video_low",
+          stream: %VariantStream{bandwidth: 500_000, codecs: []},
+          segment_extension: ".ts",
+          target_segment_duration: 2.0
+        )
+
+      state = add_segments(state, storage, manifest_uri, "video_high", 2, 2.0)
+      state = add_segments(state, storage, manifest_uri, "video_low", 2, 2.0)
+
+      {state, actions} = Packager.sync(state, 2)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      high_content =
+        load_media_content(storage, manifest_uri, state.tracks["video_high"].media_playlist.uri)
+
+      low_content =
+        load_media_content(storage, manifest_uri, state.tracks["video_low"].media_playlist.uri)
+
+      high_target =
+        high_content
+        |> playlist_lines()
+        |> Enum.find(&String.starts_with?(&1, "#EXT-X-TARGETDURATION:"))
+
+      low_target =
+        low_content
+        |> playlist_lines()
+        |> Enum.find(&String.starts_with?(&1, "#EXT-X-TARGETDURATION:"))
+
+      assert high_target == low_target
+    end
+
+    test "playlist type is consistent across variants", %{
+      manifest_uri: manifest_uri,
+      storage: storage
+    } do
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri)
+
+      {state, []} =
+        Packager.add_track(state, "video_high",
+          stream: %VariantStream{bandwidth: 2_000_000, codecs: []},
+          segment_extension: ".ts",
+          target_segment_duration: 2.0
+        )
+
+      {state, []} =
+        Packager.add_track(state, "video_low",
+          stream: %VariantStream{bandwidth: 500_000, codecs: []},
+          segment_extension: ".ts",
+          target_segment_duration: 2.0
+        )
+
+      state = add_segments(state, storage, manifest_uri, "video_high", 2, 2.0)
+      state = add_segments(state, storage, manifest_uri, "video_low", 2, 2.0)
+
+      {state, actions} = Packager.sync(state, 2)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      high_lines =
+        load_media_content(storage, manifest_uri, state.tracks["video_high"].media_playlist.uri)
+        |> playlist_lines()
+
+      low_lines =
+        load_media_content(storage, manifest_uri, state.tracks["video_low"].media_playlist.uri)
+        |> playlist_lines()
+
+      assert Enum.member?(high_lines, "#EXT-X-PLAYLIST-TYPE:EVENT")
+      assert Enum.member?(low_lines, "#EXT-X-PLAYLIST-TYPE:EVENT")
+    end
+
+    test "playlist type is consistent across variants for VOD", %{
+      manifest_uri: manifest_uri,
+      storage: storage
+    } do
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri)
+
+      {state, []} =
+        Packager.add_track(state, "video_high",
+          stream: %VariantStream{bandwidth: 2_000_000, codecs: []},
+          segment_extension: ".ts",
+          target_segment_duration: 2.0
+        )
+
+      {state, []} =
+        Packager.add_track(state, "video_low",
+          stream: %VariantStream{bandwidth: 500_000, codecs: []},
+          segment_extension: ".ts",
+          target_segment_duration: 2.0
+        )
+
+      state = add_segments(state, storage, manifest_uri, "video_high", 1, 2.0)
+      state = add_segments(state, storage, manifest_uri, "video_low", 1, 2.0)
+
+      {state, actions} = Packager.flush(state)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      high_lines =
+        load_media_content(storage, manifest_uri, state.tracks["video_high"].media_playlist.uri)
+        |> playlist_lines()
+
+      low_lines =
+        load_media_content(storage, manifest_uri, state.tracks["video_low"].media_playlist.uri)
+        |> playlist_lines()
+
+      assert Enum.member?(high_lines, "#EXT-X-PLAYLIST-TYPE:VOD")
+      assert Enum.member?(low_lines, "#EXT-X-PLAYLIST-TYPE:VOD")
+    end
+
+    test "program date time tags are consistent across variants", %{
+      manifest_uri: manifest_uri,
+      storage: storage
+    } do
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri)
+
+      {state, []} =
+        Packager.add_track(state, "video_high",
+          stream: %VariantStream{bandwidth: 2_000_000, codecs: []},
+          segment_extension: ".ts",
+          target_segment_duration: 2.0
+        )
+
+      {state, []} =
+        Packager.add_track(state, "video_low",
+          stream: %VariantStream{bandwidth: 500_000, codecs: []},
+          segment_extension: ".ts",
+          target_segment_duration: 2.0
+        )
+
+      state = add_segments(state, storage, manifest_uri, "video_high", 2, 2.0)
+      state = add_segments(state, storage, manifest_uri, "video_low", 2, 2.0)
+
+      {state, actions} = Packager.sync(state, 2)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      high_pdts =
+        load_media_content(storage, manifest_uri, state.tracks["video_high"].media_playlist.uri)
+        |> playlist_lines()
+        |> Enum.filter(&String.starts_with?(&1, "#EXT-X-PROGRAM-DATE-TIME:"))
+
+      low_pdts =
+        load_media_content(storage, manifest_uri, state.tracks["video_low"].media_playlist.uri)
+        |> playlist_lines()
+        |> Enum.filter(&String.starts_with?(&1, "#EXT-X-PROGRAM-DATE-TIME:"))
+
+      assert length(high_pdts) == length(low_pdts)
+      assert high_pdts == low_pdts
     end
   end
 end

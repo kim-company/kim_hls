@@ -28,7 +28,7 @@ defmodule HLS.Packager do
   )
 
   # 3. Add segment (returns upload action)
-  {state, [action]} = Packager.put_segment(state, "video", duration: 5.2)
+  {state, [action]} = Packager.put_segment(state, "video", duration: 5.2, pts: 0)
   # action = %Action.UploadSegment{
   #   id: "video_seg_1",
   #   uri: URI.parse("stream_video/00000/stream_video_00001.m4s"),
@@ -148,6 +148,10 @@ defmodule HLS.Packager do
               | :timestamp_drift_detected
               | :unsynchronized_discontinuity
               | :track_behind_sync_point
+              | :mandatory_track_behind_sync_point
+              | :mandatory_track_timing_mismatch
+              | :timing_discontinuity_detected
+              | :discontinuity_sync_point_passed
 
       @type t :: %__MODULE__{
               severity: severity(),
@@ -177,9 +181,13 @@ defmodule HLS.Packager do
             media_playlist: Media.t(),
             pending_playlist: Media.t(),
             pending_segments: [%{segment: Segment.t(), uploaded?: boolean(), id: String.t()}],
-            discontinue_next_segment: boolean(),
             codecs: [String.t()],
-            next_sync_datetime: DateTime.t() | nil
+            mandatory?: boolean(),
+            last_timestamp_ns: non_neg_integer() | nil,
+            last_duration_ns: non_neg_integer() | nil,
+            base_pdt: DateTime.t() | nil,
+            base_timestamp_ns: non_neg_integer() | nil,
+            applied_discontinuities: MapSet.t()
           }
 
     defstruct [
@@ -190,9 +198,13 @@ defmodule HLS.Packager do
       :init_section,
       :media_playlist,
       :pending_playlist,
-      :next_sync_datetime,
+      :base_pdt,
+      :base_timestamp_ns,
+      :mandatory?,
+      :last_timestamp_ns,
+      :last_duration_ns,
+      :applied_discontinuities,
       pending_segments: [],
-      discontinue_next_segment: false,
       codecs: []
     ]
   end
@@ -204,15 +216,19 @@ defmodule HLS.Packager do
           manifest_uri: URI.t(),
           tracks: %{track_id() => Track.t()},
           max_segments: pos_integer() | nil,
-          timeline_reference: DateTime.t()
+          timeline_reference: DateTime.t(),
+          timing_tolerance_ns: non_neg_integer(),
+          pending_discontinuities: list()
         }
 
   defstruct [
     :manifest_uri,
     :timeline_reference,
+    :timing_tolerance_ns,
     master_written?: false,
     tracks: %{},
-    max_segments: nil
+    max_segments: nil,
+    pending_discontinuities: []
   ]
 
   @doc """
@@ -222,6 +238,7 @@ defmodule HLS.Packager do
 
   - `:manifest_uri` (required) - URI of the master playlist
   - `:max_segments` - Maximum segments per media playlist (nil = unlimited)
+  - `:timing_tolerance_ms` - Allowed timing drift in milliseconds (default: 200)
 
   ## Examples
 
@@ -233,12 +250,16 @@ defmodule HLS.Packager do
   @spec new(keyword()) :: {:ok, t()} | {:error, term()}
   def new(opts) do
     with {:ok, validated} <- validate_new_opts(opts) do
+      timeline_reference = DateTime.utc_now(:millisecond)
+
       state = %__MODULE__{
         manifest_uri: validated.manifest_uri,
         max_segments: validated.max_segments,
-        timeline_reference: DateTime.utc_now(:millisecond),
+        timeline_reference: timeline_reference,
+        timing_tolerance_ns: validated.timing_tolerance_ns,
         tracks: %{},
-        master_written?: false
+        master_written?: false,
+        pending_discontinuities: []
       }
 
       {:ok, state}
@@ -281,8 +302,10 @@ defmodule HLS.Packager do
         manifest_uri: master.uri,
         max_segments: validated.max_segments,
         timeline_reference: DateTime.utc_now(:millisecond),
+        timing_tolerance_ns: validated.timing_tolerance_ns,
         master_written?: true,
-        tracks: build_tracks_from_playlists(master, medias, validated)
+        tracks: build_tracks_from_playlists(master, medias, validated),
+        pending_discontinuities: []
       }
 
       {:ok, state}
@@ -304,7 +327,8 @@ defmodule HLS.Packager do
         },
         segment_extension: ".m4s",
         target_segment_duration: 6.0,
-        codecs: ["avc1.64001f"]
+        codecs: ["avc1.64001f"],
+        mandatory?: true
       )
   """
   @spec add_track(t(), track_id(), keyword()) :: {t(), []}
@@ -347,8 +371,13 @@ defmodule HLS.Packager do
       media_playlist: media_playlist,
       pending_playlist: %{media_playlist | uri: append_to_path(media_playlist.uri, "_pending")},
       codecs: opts.codecs,
-      next_sync_datetime: state.timeline_reference,
-      pending_segments: []
+      mandatory?: resolve_mandatory(opts.mandatory?, stream),
+      last_timestamp_ns: nil,
+      last_duration_ns: nil,
+      base_pdt: state.timeline_reference,
+      base_timestamp_ns: nil,
+      pending_segments: [],
+      applied_discontinuities: MapSet.new()
     }
 
     new_state = put_in(state.tracks[track_id], track)
@@ -438,12 +467,14 @@ defmodule HLS.Packager do
   Adds a segment to a track and returns an upload action.
 
   The caller must upload the segment payload and then call `confirm_upload/2`.
+  The caller must provide PTS in nanoseconds; DTS may be provided for video and
+  is used instead of PTS when present.
 
   May also return warning actions if RFC 8216 compliance issues are detected.
 
   ## Examples
 
-      {state, [action]} = Packager.put_segment(state, "video", duration: 5.2)
+      {state, [action]} = Packager.put_segment(state, "video", duration: 5.2, pts: 0)
 
       # Caller uploads
       :ok = Storage.put(storage, action.uri, segment_payload)
@@ -456,17 +487,30 @@ defmodule HLS.Packager do
   def put_segment(state, track_id, opts) do
     track = Map.fetch!(state.tracks, track_id)
     duration = Keyword.fetch!(opts, :duration)
+    pts = Keyword.fetch!(opts, :pts)
+    dts = Keyword.get(opts, :dts)
+    timestamp_ns = dts || pts
 
     next_index = track.segment_count + 1
+    duration_ns = duration_to_ns(duration)
 
     segment_uri =
       relative_segment_uri(track.media_playlist.uri, track.segment_extension, next_index)
 
+    {state, timing_warnings} =
+      maybe_schedule_timing_discontinuity(state, track_id, next_index, timestamp_ns, duration_ns)
+
+    {discontinuity, state, segment_pdt, base_pdt, base_timestamp_ns} =
+      apply_discontinuity_if_needed(state, track_id, next_index, timestamp_ns, track)
+
     segment = %Segment{
       uri: segment_uri,
       duration: Float.round(duration, 5),
+      pts: pts,
+      dts: dts,
       init_section: if(track.init_section, do: %{uri: track.init_section.uri}),
-      discontinuity: track.discontinue_next_segment
+      discontinuity: discontinuity,
+      program_date_time: segment_pdt
     }
 
     upload_id = "#{track_id}_seg_#{next_index}"
@@ -481,15 +525,11 @@ defmodule HLS.Packager do
       update_in(state.tracks[track_id], fn t ->
         t
         |> Map.update!(:segment_count, &(&1 + 1))
-        |> Map.put(:discontinue_next_segment, false)
+        |> Map.put(:base_pdt, base_pdt)
+        |> Map.put(:base_timestamp_ns, base_timestamp_ns)
+        |> Map.put(:last_timestamp_ns, timestamp_ns)
+        |> Map.put(:last_duration_ns, duration_ns)
         |> Map.update!(:pending_segments, &(&1 ++ [pending_segment]))
-        |> then(fn t ->
-          if segment.discontinuity do
-            %{t | next_sync_datetime: state.timeline_reference}
-          else
-            t
-          end
-        end)
       end)
 
     action = %Action.UploadSegment{
@@ -520,7 +560,7 @@ defmodule HLS.Packager do
         []
       end
 
-    {new_state, [action | warnings]}
+    {new_state, [action | timing_warnings ++ warnings]}
   end
 
   @doc """
@@ -603,16 +643,12 @@ defmodule HLS.Packager do
 
   def discontinue(state) do
     timeline_reference = DateTime.utc_now(:millisecond)
+    sync_point = next_discontinuity_sync_point(state)
 
-    new_tracks =
-      Map.new(state.tracks, fn {id, track} ->
-        {id, %{track | discontinue_next_segment: true}}
-      end)
+    {new_state, warnings} =
+      schedule_discontinuity(state, sync_point, :manual, timeline_reference)
 
-    # RFC 8216: Warn if discontinuities are not synchronized across tracks
-    warnings = check_discontinuity_alignment(state)
-
-    {%{state | tracks: new_tracks, timeline_reference: timeline_reference}, warnings}
+    {%{new_state | timeline_reference: timeline_reference}, warnings}
   end
 
   @doc """
@@ -637,6 +673,16 @@ defmodule HLS.Packager do
   """
   @spec sync(t(), pos_integer()) :: {t(), [Action.t()]}
   def sync(state, sync_point) do
+    case sync_if_ready(state, sync_point) do
+      {:not_ready, warnings} ->
+        {state, warnings}
+
+      :ready ->
+        do_sync(state, sync_point)
+    end
+  end
+
+  defp do_sync(state, sync_point) do
     # Move segments to media playlists
     {new_tracks, track_actions} =
       state.tracks
@@ -653,13 +699,7 @@ defmodule HLS.Packager do
     # Maybe write master playlist
     {new_state, master_actions} = maybe_write_master(new_state, sync_point)
 
-    # RFC 8216: Check for timestamp drift across variant streams
-    drift_warnings = check_timestamp_drift(new_state)
-
-    # RFC 8216: Check for tracks behind sync point
-    sync_warnings = check_tracks_behind_sync(new_state, sync_point)
-
-    {new_state, all_track_actions ++ master_actions ++ drift_warnings ++ sync_warnings}
+    {new_state, all_track_actions ++ master_actions}
   end
 
   @doc """
@@ -677,6 +717,29 @@ defmodule HLS.Packager do
       |> Enum.max(fn -> 0 end)
 
     max_segments + 1
+  end
+
+  @doc """
+  Checks whether selected tracks have enough available segments to sync.
+
+  By default, only variant (video) tracks are checked.
+  Returns `{ready?, lagging_track_ids}`.
+  """
+  @spec sync_ready?(t(), pos_integer(), (track_id(), Track.t() -> boolean())) ::
+          {boolean(), [track_id()]}
+  def sync_ready?(state, sync_point, track_filter \\ &variant_track?/2) do
+    lagging =
+      state.tracks
+      |> Enum.filter(fn {id, track} -> track_filter.(id, track) end)
+      |> Enum.reduce([], fn {id, track}, acc ->
+        available =
+          length(track.pending_playlist.segments) + length(track.media_playlist.segments)
+
+        if available < sync_point, do: [id | acc], else: acc
+      end)
+      |> Enum.reverse()
+
+    {lagging == [], lagging}
   end
 
   @doc """
@@ -730,14 +793,6 @@ defmodule HLS.Packager do
     else
       new_duration = track.duration + moved_duration
 
-      # Assign program date times if sliding window
-      {moved_segments, track} =
-        if state.max_segments do
-          assign_datetime(moved_segments, track)
-        else
-          {moved_segments, track}
-        end
-
       # Update media playlist
       updated_media = %{
         track.media_playlist
@@ -745,7 +800,8 @@ defmodule HLS.Packager do
       }
 
       # Apply sliding window
-      {windowed_media, removed_segments} = apply_sliding_window(updated_media, state.max_segments)
+      {windowed_media, removed_segments, updated_track} =
+        apply_sliding_window(updated_media, state.max_segments, track, state.pending_discontinuities)
 
       # Update pending playlist
       updated_pending = %{track.pending_playlist | segments: remaining_segments}
@@ -773,7 +829,7 @@ defmodule HLS.Packager do
       delete_actions = build_delete_actions(removed_segments, windowed_media, track_id)
 
       updated_track = %{
-        track
+        updated_track
         | duration: new_duration,
           media_playlist: windowed_media,
           pending_playlist: updated_pending
@@ -790,23 +846,10 @@ defmodule HLS.Packager do
     {moved, remaining, duration}
   end
 
-  defp assign_datetime(segments, track) do
-    Enum.map_reduce(segments, track, fn segment, track ->
-      segment = %{segment | program_date_time: track.next_sync_datetime}
+  defp apply_sliding_window(playlist, nil, track, _pending_discontinuities),
+    do: {playlist, [], track}
 
-      track = %{
-        track
-        | next_sync_datetime:
-            DateTime.add(track.next_sync_datetime, round(segment.duration), :second)
-      }
-
-      {segment, track}
-    end)
-  end
-
-  defp apply_sliding_window(playlist, nil), do: {playlist, []}
-
-  defp apply_sliding_window(playlist, max_segments) do
+  defp apply_sliding_window(playlist, max_segments, track, pending_discontinuities) do
     segment_count = length(playlist.segments)
 
     if segment_count > max_segments do
@@ -822,9 +865,21 @@ defmodule HLS.Packager do
           discontinuity_sequence: playlist.discontinuity_sequence + removed_discontinuities
       }
 
-      {updated, removed}
+      {updated_track, extra_discontinuities} =
+        advance_discontinuities_past_window(
+          track,
+          pending_discontinuities,
+          updated.media_sequence_number
+        )
+
+      updated = %{
+        updated
+        | discontinuity_sequence: updated.discontinuity_sequence + extra_discontinuities
+      }
+
+      {updated, removed, updated_track}
     else
-      {playlist, []}
+      {playlist, [], track}
     end
   end
 
@@ -1025,147 +1080,6 @@ defmodule HLS.Packager do
     {new_state, delete_actions ++ [master_delete]}
   end
 
-  # RFC 8216 Compliance Checks
-
-  defp check_discontinuity_alignment(state) do
-    # Get total segment counts for each track
-    segment_counts =
-      state.tracks
-      |> Enum.map(fn {id, track} ->
-        total_segments =
-          length(track.media_playlist.segments) + length(track.pending_playlist.segments)
-
-        {id, total_segments}
-      end)
-
-    # Check if all tracks have the same number of segments
-    unique_counts = segment_counts |> Enum.map(&elem(&1, 1)) |> Enum.uniq()
-
-    if length(unique_counts) > 1 do
-      [
-        %Action.Warning{
-          severity: :warning,
-          code: :unsynchronized_discontinuity,
-          message:
-            "RFC 8216: Discontinuity called with misaligned tracks. Variant streams should have matching segment counts for synchronized discontinuities.",
-          details: %{
-            segment_counts: Map.new(segment_counts),
-            expected: "All tracks should have the same segment count when adding discontinuities"
-          }
-        }
-      ]
-    else
-      []
-    end
-  end
-
-  defp check_timestamp_drift(state) do
-    # Only check when max_segments is set (sliding window with timestamps)
-    if state.max_segments do
-      variant_tracks =
-        state.tracks
-        |> Enum.filter(fn {_id, track} -> is_struct(track.stream, VariantStream) end)
-        |> Enum.map(fn {id, track} -> {id, track} end)
-
-      # Group variant streams by their position (assuming corresponding segments should align)
-      if length(variant_tracks) > 1 do
-        check_variant_timestamp_alignment(variant_tracks)
-      else
-        []
-      end
-    else
-      []
-    end
-  end
-
-  defp check_variant_timestamp_alignment(variant_tracks) do
-    # Get the minimum segment count across all tracks
-    min_segments =
-      variant_tracks
-      |> Enum.map(fn {_id, track} -> length(track.media_playlist.segments) end)
-      |> Enum.min(fn -> 0 end)
-
-    if min_segments > 0 do
-      # Check each position for timestamp alignment
-      0..(min_segments - 1)
-      |> Enum.flat_map(fn index ->
-        timestamps =
-          variant_tracks
-          |> Enum.map(fn {id, track} ->
-            segment = Enum.at(track.media_playlist.segments, index)
-            {id, segment.program_date_time}
-          end)
-          |> Enum.filter(fn {_id, dt} -> dt != nil end)
-
-        # Check if all timestamps at this position match
-        if length(timestamps) > 1 do
-          [{_first_id, first_dt} | rest] = timestamps
-
-          mismatches =
-            Enum.filter(rest, fn {_id, dt} ->
-              DateTime.compare(first_dt, dt) != :eq
-            end)
-
-          if length(mismatches) > 0 do
-            all_timestamps = Map.new(timestamps)
-
-            [
-              %Action.Warning{
-                severity: :error,
-                code: :timestamp_drift_detected,
-                message:
-                  "RFC 8216 violation: Matching segments across variant streams have misaligned timestamps at position #{index}",
-                details: %{
-                  position: index,
-                  timestamps: all_timestamps,
-                  expected: first_dt,
-                  drift_seconds:
-                    Enum.map(mismatches, fn {id, dt} ->
-                      {id, DateTime.diff(dt, first_dt, :second)}
-                    end)
-                    |> Map.new()
-                }
-              }
-            ]
-          else
-            []
-          end
-        else
-          []
-        end
-      end)
-    else
-      []
-    end
-  end
-
-  defp check_tracks_behind_sync(state, sync_point) do
-    state.tracks
-    |> Enum.flat_map(fn {id, track} ->
-      available =
-        length(track.pending_playlist.segments) + length(track.media_playlist.segments)
-
-      if available < sync_point do
-        [
-          %Action.Warning{
-            severity: :warning,
-            code: :track_behind_sync_point,
-            message:
-              "Track '#{id}' only has #{available} segments but sync point is #{sync_point}",
-            details: %{
-              track_id: id,
-              available_segments: available,
-              sync_point: sync_point,
-              missing_segments: sync_point - available
-            }
-          }
-        ]
-      else
-        []
-      end
-    end)
-  end
-
   # URI helpers (copied from original)
   defp relative_segment_uri(playlist_uri, extname, segment_index) do
     root_path =
@@ -1203,13 +1117,323 @@ defmodule HLS.Packager do
     |> URI.new!()
   end
 
+  defp sync_if_ready(state, sync_point) do
+    mandatory_tracks =
+      state.tracks
+      |> Enum.filter(fn {_id, track} -> track.mandatory? end)
+
+    warnings =
+      mandatory_tracks
+      |> Enum.flat_map(fn {id, track} ->
+        available =
+          length(track.pending_playlist.segments) + length(track.media_playlist.segments)
+
+        if available < sync_point do
+          [
+            %Action.Warning{
+              severity: :warning,
+              code: :mandatory_track_behind_sync_point,
+              message:
+                "Mandatory track '#{id}' only has #{available} segments but sync point is #{sync_point}",
+              details: %{
+                track_id: id,
+                available_segments: available,
+                sync_point: sync_point,
+                missing_segments: sync_point - available
+              }
+            }
+          ]
+        else
+          []
+        end
+      end)
+
+    if warnings != [] do
+      {:not_ready, warnings}
+    else
+      {aligned?, alignment_warnings} = check_mandatory_alignment(mandatory_tracks, sync_point, state)
+
+      if aligned? do
+        :ready
+      else
+        {:not_ready, alignment_warnings}
+      end
+    end
+  end
+
+  defp check_mandatory_alignment([], _sync_point, _state), do: {true, []}
+
+  defp check_mandatory_alignment(tracks, sync_point, state) do
+    {timestamps, missing} =
+      Enum.reduce(tracks, {[], []}, fn {id, track}, {acc, missing_acc} ->
+        segment = segment_at_sync_point(track, sync_point)
+
+        case segment_timestamp_ns(segment) do
+          nil -> {acc, [id | missing_acc]}
+          ts -> {[{id, ts} | acc], missing_acc}
+        end
+      end)
+
+    missing_warnings =
+      Enum.map(missing, fn id ->
+        %Action.Warning{
+          severity: :warning,
+          code: :mandatory_track_timing_mismatch,
+          message: "Mandatory track '#{id}' is missing timing information at sync point",
+          details: %{track_id: id, sync_point: sync_point}
+        }
+      end)
+
+    case timestamps do
+      [] ->
+        {false, missing_warnings}
+
+      [{_id, reference_ts} | rest] ->
+        {mismatches, warnings} =
+          Enum.reduce(rest, {[], []}, fn {id, ts}, {mismatch_ids, warn_acc} ->
+            if abs(ts - reference_ts) > state.timing_tolerance_ns do
+              {
+                [id | mismatch_ids],
+                [
+                  %Action.Warning{
+                    severity: :warning,
+                    code: :mandatory_track_timing_mismatch,
+                    message:
+                      "Mandatory track '#{id}' has misaligned timing at sync point #{sync_point}",
+                    details: %{
+                      track_id: id,
+                      sync_point: sync_point,
+                      timestamp_ns: ts,
+                      expected_ns: reference_ts,
+                      tolerance_ns: state.timing_tolerance_ns
+                    }
+                  }
+                  | warn_acc
+                ]
+              }
+            else
+              {mismatch_ids, warn_acc}
+            end
+          end)
+
+        {mismatches == [], warnings ++ missing_warnings}
+    end
+  end
+
+  defp segment_at_sync_point(track, sync_point) do
+    segments = track.media_playlist.segments ++ track.pending_playlist.segments
+    Enum.at(segments, sync_point - 1)
+  end
+
+  defp apply_discontinuity_if_needed(state, track_id, segment_index, timestamp_ns, track) do
+    case find_discontinuity(state.pending_discontinuities, segment_index) do
+      nil ->
+        {segment_pdt, base_pdt, base_timestamp_ns} =
+          compute_segment_pdt(track.base_pdt, track.base_timestamp_ns, timestamp_ns)
+
+        {false, state, segment_pdt, base_pdt, base_timestamp_ns}
+
+      discontinuity ->
+        segment_pdt = discontinuity.pdt_reference
+        base_pdt = discontinuity.pdt_reference
+        base_timestamp_ns = timestamp_ns
+
+        updated_state =
+          update_in(state.tracks[track_id].applied_discontinuities, fn applied ->
+            MapSet.put(applied, discontinuity.id)
+          end)
+          |> maybe_pop_discontinuities()
+
+        {true, updated_state, segment_pdt, base_pdt, base_timestamp_ns}
+    end
+  end
+
+  defp maybe_schedule_timing_discontinuity(
+         state,
+         track_id,
+         segment_index,
+         timestamp_ns,
+         _duration_ns
+       ) do
+    track = Map.fetch!(state.tracks, track_id)
+
+    if track.last_timestamp_ns && track.last_duration_ns do
+      expected = track.last_timestamp_ns + track.last_duration_ns
+
+      if abs(timestamp_ns - expected) > state.timing_tolerance_ns do
+        timeline_reference = DateTime.utc_now(:millisecond)
+
+        {state, warnings} =
+          schedule_discontinuity(
+            state,
+            segment_index,
+            :timing_discontinuity,
+            timeline_reference,
+            timestamp_ns
+          )
+
+        warning = %Action.Warning{
+          severity: :warning,
+          code: :timing_discontinuity_detected,
+          message:
+            "Timing discontinuity detected on track '#{track_id}' at segment #{segment_index}",
+          details: %{
+            track_id: track_id,
+            segment_index: segment_index,
+            timestamp_ns: timestamp_ns,
+            expected_ns: expected,
+            tolerance_ns: state.timing_tolerance_ns
+          }
+        }
+
+        {state, [warning | warnings]}
+      else
+        {state, []}
+      end
+    else
+      {state, []}
+    end
+  end
+
+  defp schedule_discontinuity(state, sync_point, reason, pdt_reference, timestamp_reference_ns \\ nil) do
+    if discontinuity_exists?(state.pending_discontinuities, sync_point) do
+      {state, []}
+    else
+      passed_tracks =
+        state.tracks
+        |> Enum.filter(fn {_id, track} -> track.segment_count >= sync_point end)
+        |> Enum.map(&elem(&1, 0))
+
+      if passed_tracks != [] do
+        warning = %Action.Warning{
+          severity: :error,
+          code: :discontinuity_sync_point_passed,
+          message:
+            "Discontinuity at segment #{sync_point} cannot be synchronized across all tracks",
+          details: %{
+            sync_point: sync_point,
+            reason: reason,
+            tracks_ahead: passed_tracks
+          }
+        }
+
+        {state, [warning]}
+      else
+        entry = %{
+          id: make_ref(),
+          sync_point: sync_point,
+          pdt_reference: pdt_reference,
+          timestamp_reference_ns: timestamp_reference_ns,
+          reason: reason
+        }
+
+        {%{state | pending_discontinuities: state.pending_discontinuities ++ [entry]}, []}
+      end
+    end
+  end
+
+  defp discontinuity_exists?(discontinuities, sync_point) do
+    Enum.any?(discontinuities, fn disc -> disc.sync_point == sync_point end)
+  end
+
+  defp find_discontinuity(discontinuities, sync_point) do
+    Enum.find(discontinuities, fn disc -> disc.sync_point == sync_point end)
+  end
+
+  defp maybe_pop_discontinuities(state) do
+    case state.pending_discontinuities do
+      [] ->
+        state
+
+      [head | rest] ->
+        all_applied? =
+          Enum.all?(state.tracks, fn {_id, track} ->
+            MapSet.member?(track.applied_discontinuities, head.id)
+          end)
+
+        if all_applied? do
+          maybe_pop_discontinuities(%{state | pending_discontinuities: rest})
+        else
+          state
+        end
+    end
+  end
+
+  defp advance_discontinuities_past_window(track, pending_discontinuities, media_sequence_number) do
+    {applied_ids, count, updated_track} =
+      pending_discontinuities
+      |> Enum.reduce({track.applied_discontinuities, 0, track}, fn disc,
+                                                                   {applied, acc, acc_track} ->
+        if MapSet.member?(applied, disc.id) do
+          {applied, acc, acc_track}
+        else
+          if disc.sync_point <= media_sequence_number do
+            updated_track =
+              acc_track
+              |> Map.put(:base_pdt, disc.pdt_reference)
+              |> Map.put(:base_timestamp_ns, disc.timestamp_reference_ns)
+
+            {MapSet.put(applied, disc.id), acc + 1, updated_track}
+          else
+            {applied, acc, acc_track}
+          end
+        end
+      end)
+
+    {%{updated_track | applied_discontinuities: applied_ids}, count}
+  end
+
+  defp next_discontinuity_sync_point(state) do
+    state.tracks
+    |> Enum.map(fn {_id, track} -> track.segment_count end)
+    |> Enum.max(fn -> 0 end)
+    |> Kernel.+(1)
+  end
+
+  defp segment_timestamp_ns(%Segment{dts: dts, pts: pts}) do
+    dts || pts
+  end
+
+  defp compute_segment_pdt(base_pdt, base_timestamp_ns, timestamp_ns) when is_nil(base_pdt) do
+    {nil, nil, base_timestamp_ns || timestamp_ns}
+  end
+
+  defp compute_segment_pdt(base_pdt, base_timestamp_ns, timestamp_ns)
+       when is_nil(base_timestamp_ns) do
+    {base_pdt, base_pdt, timestamp_ns}
+  end
+
+  defp compute_segment_pdt(base_pdt, base_timestamp_ns, timestamp_ns) do
+    offset_ns = timestamp_ns - base_timestamp_ns
+    {DateTime.add(base_pdt, offset_ns, :nanosecond), base_pdt, base_timestamp_ns}
+  end
+
+  defp duration_to_ns(duration) do
+    round(duration * 1_000_000_000)
+  end
+
+  defp timing_tolerance_to_ns(tolerance_ms) when is_integer(tolerance_ms) do
+    tolerance_ms * 1_000_000
+  end
+
+  defp resolve_mandatory(nil, stream), do: is_struct(stream, VariantStream)
+  defp resolve_mandatory(mandatory?, _stream), do: mandatory?
+
+  defp variant_track?(_track_id, track) do
+    is_struct(track.stream, VariantStream)
+  end
+
   # Validation helpers
   defp validate_new_opts(opts) do
     with {:ok, manifest_uri} <- Keyword.fetch(opts, :manifest_uri) do
       {:ok,
        %{
          manifest_uri: manifest_uri,
-         max_segments: Keyword.get(opts, :max_segments)
+         max_segments: Keyword.get(opts, :max_segments),
+         timing_tolerance_ns:
+           opts
+           |> Keyword.get(:timing_tolerance_ms, 200)
+           |> timing_tolerance_to_ns()
        }}
     else
       :error -> {:error, "manifest_uri is required"}
@@ -1223,7 +1447,11 @@ defmodule HLS.Packager do
        %{
          master_playlist: master,
          media_playlists: medias,
-         max_segments: Keyword.get(opts, :max_segments)
+         max_segments: Keyword.get(opts, :max_segments),
+         timing_tolerance_ns:
+           opts
+           |> Keyword.get(:timing_tolerance_ms, 200)
+           |> timing_tolerance_to_ns()
        }}
     else
       :error -> {:error, "master_playlist and media_playlists required"}
@@ -1235,7 +1463,8 @@ defmodule HLS.Packager do
       stream: Keyword.fetch!(opts, :stream),
       segment_extension: Keyword.fetch!(opts, :segment_extension),
       target_segment_duration: Keyword.fetch!(opts, :target_segment_duration),
-      codecs: Keyword.get(opts, :codecs, [])
+      codecs: Keyword.get(opts, :codecs, []),
+      mandatory?: Keyword.get(opts, :mandatory?, nil)
     }
   end
 

@@ -16,6 +16,19 @@ def deps do
 end
 ```
 
+## From v2.x.x to v3.x.x
+
+This release is a major architectural update focused on a fully functional packager and stricter RFC 8216 compliance. Highlights:
+
+- `HLS.Packager` is now pure functional: operations return state + actions, and callers execute I/O.
+- GenServer-based packager APIs are removed (no `start_link/1` or `GenServer.call/cast` usage).
+- Segment upload flow is explicit (`put_segment` + `confirm_upload`), enabling caller-controlled concurrency.
+- Discontinuities reset program date-time to a new shared reference.
+- Master playlist output is reordered to place `#EXT-X-MEDIA` before `#EXT-X-STREAM-INF`.
+- `#EXT-X-MEDIA` validation tightened (required attributes, CLOSED-CAPTIONS URI rules).
+- Master and media playlist tests now assert RFC tag ordering and required attributes.
+- Media target duration remains fixed to configured value (no per-playlist drift).
+
 ## Architecture
 
 The library is structured around three main components:
@@ -58,7 +71,7 @@ The library is structured around three main components:
 )
 
 # Add segment (returns upload action)
-{state, [action]} = HLS.Packager.put_segment(state, "video_480p", duration: 6.0)
+{state, [action]} = HLS.Packager.put_segment(state, "video_480p", duration: 6.0, pts: 0)
 
 # Caller uploads the segment
 storage = HLS.Storage.File.new(base_path: "./output")

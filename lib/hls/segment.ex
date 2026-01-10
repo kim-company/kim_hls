@@ -8,6 +8,8 @@ defmodule HLS.Segment do
           ref: reference(),
           # Expressed in seconds.
           duration: float(),
+          pts: non_neg_integer() | nil,
+          dts: non_neg_integer() | nil,
           relative_sequence: pos_integer(),
           absolute_sequence: pos_integer() | nil,
           from: pos_integer() | nil,
@@ -20,6 +22,8 @@ defmodule HLS.Segment do
   defstruct [
     :uri,
     :duration,
+    :pts,
+    :dts,
     :relative_sequence,
     :absolute_sequence,
     :from,
@@ -63,6 +67,8 @@ defmodule HLS.Segment do
     %__MODULE__{
       uri: uri.value,
       duration: duration.value,
+      pts: nil,
+      dts: nil,
       relative_sequence: sequence,
       ref: make_ref(),
       discontinuity: discontinuity,

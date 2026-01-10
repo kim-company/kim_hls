@@ -47,7 +47,7 @@ This is a major architectural change that replaces the GenServer-based packager 
 
 {state, []} = HLS.Packager.add_track(state, "video", opts)
 
-{state, [action]} = HLS.Packager.put_segment(state, "video", duration: 6.0)
+{state, [action]} = HLS.Packager.put_segment(state, "video", duration: 6.0, pts: 0)
 # Caller uploads: Storage.put(storage, action.uri, payload)
 {state, actions} = HLS.Packager.confirm_upload(state, action.id)
 # Caller executes write actions
@@ -128,7 +128,7 @@ This is a major architectural change that replaces the GenServer-based packager 
 - **Flexible Warning Handling**: Caller decides how to handle warnings
   ```elixir
   # Strict mode - abort on errors
-  {state, actions} = Packager.put_segment(state, "video", duration: 7.0)
+  {state, actions} = Packager.put_segment(state, "video", duration: 7.0, pts: 0)
   case Enum.find(actions, &match?(%Action.Warning{severity: :error}, &1)) do
     nil -> execute_actions(actions)
     warning -> {:error, warning}
@@ -209,7 +209,8 @@ defmodule MyApp.PackagerServer do
   use GenServer
 
   def handle_call({:put_segment, track_id, duration}, _from, state) do
-    {new_state, actions} = HLS.Packager.put_segment(state.packager, track_id, duration: duration)
+    {new_state, actions} =
+      HLS.Packager.put_segment(state.packager, track_id, duration: duration, pts: pts)
     # Execute actions...
     {:reply, :ok, %{state | packager: new_state}}
   end
