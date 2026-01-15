@@ -3,15 +3,37 @@ defmodule HLS.Playlist.MasterTest do
 
   alias HLS.Playlist
 
-  @playlist_file "test/fixtures/master_playlists/stream_with_audio_tracks.m3u8"
+  @master_example """
+  #EXTM3U
+  #EXT-X-VERSION:4
+  #EXT-X-INDEPENDENT-SEGMENTS
+  #EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subtitles",NAME="French (France)",DEFAULT=NO,AUTOSELECT=NO,FORCED=NO,LANGUAGE="fr-FR",URI="subtitles_fr-FR.m3u8"
+  #EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subtitles",NAME="English (United States)",DEFAULT=NO,AUTOSELECT=NO,FORCED=NO,LANGUAGE="en-US",URI="subtitles_en-US.m3u8"
+  #EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subtitles",NAME="German (Germany)",DEFAULT=NO,AUTOSELECT=NO,FORCED=NO,LANGUAGE="de-DE",URI="subtitles_de-DE.m3u8"
+  #EXT-X-STREAM-INF:BANDWIDTH=371056,AVERAGE-BANDWIDTH=326462,CODECS="avc1.64000c,mp4a.40.2",RESOLUTION=416x234,FRAME-RATE=15.000,AUDIO="program_audio_96k",SUBTITLES="subtitles"
+  stream_416x234.m3u8
+  #EXT-X-STREAM-INF:BANDWIDTH=1097237,AVERAGE-BANDWIDTH=944556,CODECS="avc1.640016,mp4a.40.2",RESOLUTION=640x360,FRAME-RATE=15.000,AUDIO="program_audio_96k",SUBTITLES="subtitles"
+  stream_640x360.m3u8
+  #EXT-X-STREAM-INF:BANDWIDTH=1566736,AVERAGE-BANDWIDTH=1369310,CODECS="avc1.64001f,mp4a.40.2",RESOLUTION=854x480,FRAME-RATE=30.000,AUDIO="program_audio_96k",SUBTITLES="subtitles"
+  stream_854x480.m3u8
+  #EXT-X-STREAM-INF:BANDWIDTH=4052597,AVERAGE-BANDWIDTH=3527225,CODECS="avc1.64001f,mp4a.40.2",RESOLUTION=1280x720,FRAME-RATE=30.000,AUDIO="program_audio_96k",SUBTITLES="subtitles"
+  stream_1280x720.m3u8
+  #EXT-X-STREAM-INF:BANDWIDTH=7921349,AVERAGE-BANDWIDTH=6890633,CODECS="avc1.640028,mp4a.40.2",RESOLUTION=1920x1080,FRAME-RATE=30.000,AUDIO="program_audio_160k",SUBTITLES="subtitles"
+  stream_1920x1080.m3u8
+  #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="program_audio_96k",LANGUAGE="eng",NAME="English",AUTOSELECT=YES,DEFAULT=YES,URI="stream_audio_0_96k.m3u8"
+  #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="program_audio_160k",LANGUAGE="eng",NAME="English",AUTOSELECT=YES,DEFAULT=YES,URI="stream_audio_0_160k.m3u8"
+  #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="program_audio_96k",LANGUAGE="deu",NAME="German",AUTOSELECT=YES,DEFAULT=NO,URI="stream_audio_1_96k.m3u8"
+  #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="program_audio_160k",LANGUAGE="deu",NAME="German",AUTOSELECT=YES,DEFAULT=NO,URI="stream_audio_1_160k.m3u8"
+  #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="program_audio_96k",LANGUAGE="fra",NAME="French",AUTOSELECT=YES,DEFAULT=NO,URI="stream_audio_2_96k.m3u8"
+  #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="program_audio_160k",LANGUAGE="fra",NAME="French",AUTOSELECT=YES,DEFAULT=NO,URI="stream_audio_2_160k.m3u8"
+  """
 
   test "can unmarshal playlist" do
-    playlist = File.read!(@playlist_file)
-    assert %Playlist.Master{} = Playlist.unmarshal(playlist, %Playlist.Master{})
+    assert %Playlist.Master{} = Playlist.unmarshal(@master_example, %Playlist.Master{})
   end
 
   test "unmarshal and marshal results in the same playlist" do
-    raw_playlist = File.read!(@playlist_file)
+    raw_playlist = @master_example
 
     assert %Playlist.Master{} = playlist = Playlist.unmarshal(raw_playlist, %Playlist.Master{})
     marshaled_playlist = Playlist.marshal(playlist)
@@ -221,9 +243,13 @@ defmodule HLS.Playlist.MasterTest do
       master =
         raw
         |> Playlist.unmarshal(%Playlist.Master{})
-        |> Playlist.Master.update_alternative_rendition("Ciaoone", :audio, fn %HLS.AlternativeRendition{} = alt ->
-          %HLS.AlternativeRendition{alt | name: "A"}
-        end)
+        |> Playlist.Master.update_alternative_rendition(
+          "Ciaoone",
+          :audio,
+          fn %HLS.AlternativeRendition{} = alt ->
+            %HLS.AlternativeRendition{alt | name: "A"}
+          end
+        )
 
       count =
         master.alternative_renditions
