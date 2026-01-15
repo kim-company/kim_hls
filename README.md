@@ -138,6 +138,8 @@ instead of emitting non-compliant playlists:
   when mandatory tracks are missing segments (stall without advancing playlists).
 - Track timing alignment: `sync/2` returns `{:error, %HLS.Packager.Error{code: :track_timing_mismatch_at_sync}, state}`
   if timestamps are misaligned at the sync point.
+- Upload confirmation: `confirm_upload/2` returns `{:warning, %HLS.Packager.Error{code: :upload_id_not_found}, state}`
+  when the upload id is unknown, without changing state.
 - Sliding window cleanup: when `max_segments` is set, it trims old segments, bumps
   `EXT-X-MEDIA-SEQUENCE` and `EXT-X-DISCONTINUITY-SEQUENCE`, and deletes orphaned
   init sections to keep playlists consistent.

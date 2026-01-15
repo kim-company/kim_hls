@@ -143,6 +143,7 @@ defmodule HLS.Packager do
             | :track_timing_mismatch_at_sync
             | :mandatory_track_missing_segment_at_sync
             | :sync_point_skipped
+            | :upload_id_not_found
 
     @type t :: %__MODULE__{code: code(), message: String.t(), details: map()}
   end
@@ -603,59 +604,70 @@ defmodule HLS.Packager do
       #   %Action.WritePlaylist{type: :pending, uri: ..., content: ...}
       # ]
   """
-  @spec confirm_upload(t(), String.t()) :: {t(), [Action.WritePlaylist.t()]}
+  @spec confirm_upload(t(), String.t()) ::
+          {t(), [Action.WritePlaylist.t()]} | {:warning, Error.t(), t()}
   def confirm_upload(state, upload_id) do
     # Find track with this segment
-    {track_id, _track} =
-      Enum.find(state.tracks, fn {_id, track} ->
-        Enum.any?(track.pending_segments, &(&1.id == upload_id))
-      end) || raise "Upload #{upload_id} not found"
+    case Enum.find(state.tracks, fn {_id, track} ->
+           Enum.any?(track.pending_segments, &(&1.id == upload_id))
+         end) do
+      nil ->
+        warning = %Error{
+          code: :upload_id_not_found,
+          message: "Upload #{upload_id} not found",
+          details: %{upload_id: upload_id}
+        }
 
-    # Update the specific track
-    updated_track =
-      state.tracks[track_id]
-      |> Map.update!(:pending_segments, fn segments ->
-        Enum.map(segments, fn seg ->
-          if seg.id == upload_id, do: %{seg | uploaded?: true}, else: seg
-        end)
-      end)
+        {:warning, warning, state}
 
-    # Check if we can move uploaded segments to pending playlist
-    {uploaded, still_pending} = Enum.split_while(updated_track.pending_segments, & &1.uploaded?)
+      {track_id, _track} ->
+        # Update the specific track
+        updated_track =
+          state.tracks[track_id]
+          |> Map.update!(:pending_segments, fn segments ->
+            Enum.map(segments, fn seg ->
+              if seg.id == upload_id, do: %{seg | uploaded?: true}, else: seg
+            end)
+          end)
 
-    if Enum.empty?(uploaded) do
-      new_state = %{state | tracks: Map.put(state.tracks, track_id, updated_track)}
-      {new_state, []}
-    else
-      uploaded_segments = Enum.map(uploaded, & &1.segment)
+        # Check if we can move uploaded segments to pending playlist
+        {uploaded, still_pending} =
+          Enum.split_while(updated_track.pending_segments, & &1.uploaded?)
 
-      new_pending_playlist = %{
-        updated_track.pending_playlist
-        | segments: updated_track.pending_playlist.segments ++ uploaded_segments
-      }
-
-      final_track =
-        updated_track
-        |> Map.put(:pending_segments, still_pending)
-        |> Map.put(:pending_playlist, new_pending_playlist)
-
-      new_state = %{state | tracks: Map.put(state.tracks, track_id, final_track)}
-
-      # Generate write action for pending playlist (if not in sliding window mode)
-      actions =
-        if state.max_segments do
-          []
+        if Enum.empty?(uploaded) do
+          new_state = %{state | tracks: Map.put(state.tracks, track_id, updated_track)}
+          {new_state, []}
         else
-          [
-            %Action.WritePlaylist{
-              type: :pending,
-              uri: new_pending_playlist.uri,
-              content: HLS.Playlist.marshal(new_pending_playlist)
-            }
-          ]
-        end
+          uploaded_segments = Enum.map(uploaded, & &1.segment)
 
-      {new_state, actions}
+          new_pending_playlist = %{
+            updated_track.pending_playlist
+            | segments: updated_track.pending_playlist.segments ++ uploaded_segments
+          }
+
+          final_track =
+            updated_track
+            |> Map.put(:pending_segments, still_pending)
+            |> Map.put(:pending_playlist, new_pending_playlist)
+
+          new_state = %{state | tracks: Map.put(state.tracks, track_id, final_track)}
+
+          # Generate write action for pending playlist (if not in sliding window mode)
+          actions =
+            if state.max_segments do
+              []
+            else
+              [
+                %Action.WritePlaylist{
+                  type: :pending,
+                  uri: new_pending_playlist.uri,
+                  content: HLS.Playlist.marshal(new_pending_playlist)
+                }
+              ]
+            end
+
+          {new_state, actions}
+        end
     end
   end
 

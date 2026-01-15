@@ -1200,6 +1200,45 @@ defmodule HLS.PackagerTest do
       assert Enum.at(audio_playlist.segments, 0).discontinuity
     end
 
+    test "skip_sync_point errors when sync point already passed", %{
+      manifest_uri: manifest_uri,
+      storage: _storage
+    } do
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri)
+
+      {state, []} =
+        Packager.add_track(state, "video",
+          stream: %VariantStream{bandwidth: 1_000_000, codecs: []},
+          segment_extension: ".ts",
+          target_segment_duration: 2.0
+        )
+
+      {state, [action]} = Packager.put_segment(state, "video", duration: 2.0, pts: 0)
+      assert match?(%Packager.Action.UploadSegment{}, action)
+
+      result = Packager.skip_sync_point(state, 1)
+
+      assert {:error, %Packager.Error{code: :discontinuity_point_missed}, _state} = result
+    end
+
+    test "confirm_upload warns when upload id is not found", %{
+      manifest_uri: manifest_uri,
+      storage: _storage
+    } do
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri)
+
+      {state, []} =
+        Packager.add_track(state, "video",
+          stream: %VariantStream{bandwidth: 1_000_000, codecs: []},
+          segment_extension: ".ts",
+          target_segment_duration: 2.0
+        )
+
+      result = Packager.confirm_upload(state, "missing_upload")
+
+      assert {:warning, %Packager.Error{code: :upload_id_not_found}, _state} = result
+    end
+
     test "does not error when tracks are synchronized for discontinuity", %{
       manifest_uri: manifest_uri,
       storage: storage
@@ -1492,6 +1531,42 @@ defmodule HLS.PackagerTest do
       # Discontinuity sequence should have incremented when discontinuity segment was removed
       assert final_disc_seq >= initial_disc_seq,
              "Discontinuity sequence must increment when removing discontinuity segments"
+    end
+
+    test "discontinue inserts discontinuity when max_segments is nil", %{
+      manifest_uri: manifest_uri,
+      storage: storage
+    } do
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri)
+
+      {state, []} =
+        Packager.add_track(state, "video",
+          stream: %VariantStream{bandwidth: 1_000_000, codecs: []},
+          segment_extension: ".ts",
+          target_segment_duration: 2.0
+        )
+
+      {state, [action]} = put_segment(state, "video", duration: 2.0)
+      ActionExecutor.execute_action(action, storage, manifest_uri)
+      {state, actions} = Packager.confirm_upload(state, action.id)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+      {state, actions} = Packager.sync(state, 1)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      {state, []} = Packager.discontinue(state)
+
+      {state, [action]} = put_segment(state, "video", duration: 2.0)
+      ActionExecutor.execute_action(action, storage, manifest_uri)
+      {state, actions} = Packager.confirm_upload(state, action.id)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+      {state, actions} = Packager.sync(state, 2)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      playlist =
+        load_media_playlist(storage, manifest_uri, state.tracks["video"].media_playlist.uri)
+
+      discontinuity_segments = Enum.filter(playlist.segments, & &1.discontinuity)
+      assert length(discontinuity_segments) == 1
     end
 
     test "program date time resets on discontinuity segments", %{
