@@ -31,15 +31,9 @@ This release is a major architectural update focused on a fully functional packa
 
 ## Architecture
 
-The library is structured around three main components:
-
-### Core Components
+### Core Component
 
 - **HLS.Packager** - Pure functional module for HLS playlist generation and segment handling. Returns actions for the caller to execute, providing explicit control over I/O operations.
-
-- **HLS.Tracker** - GenServer monitoring HLS renditions, polling media playlists and notifying about new segments for live streaming scenarios.
-
-- **HLS.Storage** - Protocol defining storage backend operations (get/put/delete). Includes file system and HTTP/S3 implementations.
 
 ### Supporting Modules
 
@@ -47,6 +41,7 @@ The library is structured around three main components:
 - **HLS.Playlist.Tag** - Individual HLS tag implementations (EXT-X-* tags)
 - **HLS.Segment** - Represents HLS segments with duration, URI, and optional init sections
 - **HLS.VariantStream** & **HLS.AlternativeRendition** - Stream representation structures
+- **HLS.Storage** - Protocol for get/put/delete helpers with file and Req-based implementations.
 
 ## Usage
 
@@ -73,8 +68,8 @@ The library is structured around three main components:
 # Add segment (returns upload action)
 {state, [action]} = HLS.Packager.put_segment(state, "video_480p", duration: 6.0, pts: 0)
 
-# Caller uploads the segment
-storage = HLS.Storage.File.new(base_path: "./output")
+# Caller uploads the segment via storage helper
+storage = HLS.Storage.File.new(base_dir: "./output")
 :ok = HLS.Storage.put(storage, action.uri, segment_data)
 
 # Confirm upload (may return playlist write actions)
@@ -91,21 +86,15 @@ end)
 Enum.each(actions, &execute_action(&1, storage))
 ```
 
-### Live Stream Tracking
+### Storage Helpers
 
 ```elixir
-# Start tracking a live stream
-{:ok, pid} = HLS.Tracker.start_link(
-  playlist_uri: "https://example.com/live.m3u8",
-  storage: storage_backend,
-  parent: self()
-)
+# File-backed storage for local output
+storage = HLS.Storage.File.new(base_dir: "./output")
 
-# Receive notifications
-receive do
-  {:hls_tracker, :new_segment, segment} -> 
-    IO.puts("New segment: #{segment.uri}")
-end
+# Req-backed storage for HTTP(S)
+req = Req.new(base_url: "https://cdn.example.com")
+storage = HLS.Storage.Req.new(req)
 ```
 
 ### Configuration Options
@@ -116,7 +105,7 @@ Key options for `HLS.Packager.new/1`:
 - `max_segments` - Maximum segments to retain (enables sliding window mode with automatic cleanup)
 
 For resuming from existing playlists, use `HLS.Packager.resume/1` with loaded playlist data.
-The caller must load the master and media playlists from storage; resume trims tracks to the
+The caller must load the master and media playlists; resume trims tracks to the
 last common sync point and schedules a discontinuity at the next segment.
 If a referenced media playlist is missing or empty, the track is marked incomplete and
 `put_segment/3` returns `{:error, %HLS.Packager.Error{code: :resume_track_not_ready}, state}`

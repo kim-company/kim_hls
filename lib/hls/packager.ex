@@ -89,7 +89,7 @@ defmodule HLS.Packager do
     end
 
     defmodule WritePlaylist do
-      @moduledoc "Write a playlist to storage"
+      @moduledoc "Write a playlist"
       defstruct [:type, :uri, :content]
 
       @type playlist_type :: :master | :media | :pending
@@ -101,19 +101,19 @@ defmodule HLS.Packager do
     end
 
     defmodule DeleteSegment do
-      @moduledoc "Delete a segment from storage"
+      @moduledoc "Delete a segment"
       defstruct [:uri, :track_id]
       @type t :: %__MODULE__{uri: URI.t(), track_id: String.t()}
     end
 
     defmodule DeleteInitSection do
-      @moduledoc "Delete an init section from storage"
+      @moduledoc "Delete an init section"
       defstruct [:uri, :track_id]
       @type t :: %__MODULE__{uri: URI.t(), track_id: String.t()}
     end
 
     defmodule DeletePlaylist do
-      @moduledoc "Delete a playlist from storage"
+      @moduledoc "Delete a playlist"
       defstruct [:uri, :type]
       @type t :: %__MODULE__{uri: URI.t(), type: :media | :pending | :master}
     end
@@ -257,19 +257,18 @@ defmodule HLS.Packager do
   @doc """
   Resumes from existing playlists loaded by the caller.
 
-  The caller is responsible for loading the master playlist and all media playlists
-  from storage. This function reconstructs the state from the loaded data.
+  The caller is responsible for loading the master playlist and all media playlists.
+  This function reconstructs the state from the loaded data.
 
   ## Examples
 
       # Caller loads playlists
-      {:ok, master_content} = Storage.get(storage, master_uri)
-      master = HLS.Playlist.unmarshal(master_content, %Master{uri: master_uri})
+      master = load_master_playlist(master_uri)
 
-      media_playlists = Enum.map(master.streams, fn stream ->
-        {:ok, content} = Storage.get(storage, stream.uri)
-        HLS.Playlist.unmarshal(content, %Media{uri: stream.uri})
-      end)
+      media_playlists =
+        Enum.map(master.streams, fn stream ->
+          load_media_playlist(stream.uri)
+        end)
 
       # Resume
       {:ok, state} = Packager.resume(

@@ -29,7 +29,8 @@ defmodule HLS.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:req, "~> 0.5.8", optional: true},
+      {:req, "~> 0.5.8", only: :test, optional: true},
+      {:plug, "~> 1.0", only: :test},
       {:telemetry, "~> 1.3", optional: true},
       {:benchee, "~> 1.3", only: :dev, runtime: false},
       {:ex_doc, ">= 0.0.0", only: :dev, runtime: false}
