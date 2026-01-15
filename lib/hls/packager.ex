@@ -144,6 +144,12 @@ defmodule HLS.Packager do
             | :mandatory_track_missing_segment_at_sync
             | :sync_point_skipped
             | :upload_id_not_found
+            | :track_conflict
+            | :resume_missing_playlist
+            | :resume_unexpected_playlist
+            | :resume_unknown_segment_extension
+            | :resume_inconsistent_playlist
+            | :resume_track_not_ready
 
     @type t :: %__MODULE__{code: code(), message: String.t(), details: map()}
   end
@@ -153,7 +159,7 @@ defmodule HLS.Packager do
             stream: VariantStream.t() | AlternativeRendition.t(),
             duration: float(),
             segment_count: non_neg_integer(),
-            segment_extension: String.t(),
+            segment_extension: String.t() | nil,
             init_section: %{uri: URI.t()} | nil,
             media_playlist: Media.t(),
             pending_playlist: Media.t(),
@@ -164,7 +170,8 @@ defmodule HLS.Packager do
             last_duration_ns: non_neg_integer() | nil,
             base_pdt: DateTime.t() | nil,
             base_timestamp_ns: non_neg_integer() | nil,
-            applied_discontinuities: MapSet.t()
+            applied_discontinuities: MapSet.t(),
+            resume_incomplete?: boolean()
           }
 
     defstruct [
@@ -181,6 +188,7 @@ defmodule HLS.Packager do
       :last_timestamp_ns,
       :last_duration_ns,
       :applied_discontinuities,
+      resume_incomplete?: false,
       pending_segments: [],
       codecs: []
     ]
@@ -272,24 +280,31 @@ defmodule HLS.Packager do
   """
   @spec resume(keyword()) :: {:ok, t()} | {:error, term()}
   def resume(opts) do
-    # Implementation would reconstruct state from playlists
-    # This is a simplified version
-    with {:ok, validated} <- validate_resume_opts(opts) do
+    timeline_reference = DateTime.utc_now(:millisecond)
+
+    with {:ok, validated} <- validate_resume_opts(opts),
+         {:ok, {tracks, common_sync_point}} <-
+           build_tracks_from_playlists(Map.put(validated, :timeline_reference, timeline_reference)) do
       master = validated.master_playlist
-      medias = validated.media_playlists
 
       state = %__MODULE__{
         manifest_uri: master.uri,
         max_segments: validated.max_segments,
-        timeline_reference: DateTime.utc_now(:millisecond),
+        timeline_reference: timeline_reference,
         timing_tolerance_ns: validated.timing_tolerance_ns,
         master_written?: true,
-        tracks: build_tracks_from_playlists(master, medias, validated),
+        tracks: tracks,
         pending_discontinuities: [],
         skipped_sync_points: %{}
       }
 
-      {:ok, state}
+      case schedule_discontinuity(state, common_sync_point + 1, :resume, timeline_reference) do
+        {:ok, new_state} ->
+          {:ok, %{new_state | timeline_reference: timeline_reference}}
+
+        {:error, error, _state} ->
+          {:error, error}
+      end
     end
   end
 
@@ -314,56 +329,78 @@ defmodule HLS.Packager do
   """
   @spec add_track(t(), track_id(), keyword()) :: {t(), []}
   def add_track(state, track_id, opts) do
-    if state.master_written? do
-      raise "Cannot add track after master playlist is written"
-    end
-
     if Map.has_key?(state.tracks, track_id) do
-      raise "Track #{track_id} already exists"
-    end
+      opts = validate_add_track_opts!(opts)
+      {stream, media_playlist_uri} = build_track_stream(state, track_id, opts.stream)
+      mandatory? = resolve_mandatory(opts.mandatory?, stream)
+      track = state.tracks[track_id]
 
-    opts = validate_add_track_opts!(opts)
+      cond do
+        track.resume_incomplete? ->
+          case reconcile_incomplete_track(
+                 track,
+                 track_id,
+                 stream,
+                 media_playlist_uri,
+                 opts,
+                 mandatory?
+               ) do
+            {:ok, updated_track} ->
+              new_state = put_in(state.tracks[track_id], updated_track)
+              {new_state, []}
 
-    stream =
-      case opts.stream do
-        %AlternativeRendition{type: :closed_captions} = alt ->
-          %{alt | uri: nil}
+            {:error, error} ->
+              raise error
+          end
 
-        stream ->
-          stream_uri = build_track_variant_uri(state.manifest_uri, track_id)
-          %{stream | uri: stream_uri}
+        track_spec_matches?(track, stream, media_playlist_uri, opts, mandatory?) ->
+          {state, []}
+
+        true ->
+          raise Error,
+            code: :track_conflict,
+            message: "Track #{track_id} already exists with a different specification",
+            details: %{track_id: track_id}
+      end
+    else
+      if state.master_written? do
+        raise "Cannot add track after master playlist is written"
       end
 
-    type = if state.max_segments, do: nil, else: :event
+      opts = validate_add_track_opts!(opts)
 
-    media_playlist_uri = stream.uri || build_track_variant_uri(state.manifest_uri, track_id)
+      {stream, media_playlist_uri} = build_track_stream(state, track_id, opts.stream)
 
-    media_playlist = %Media{
-      uri: media_playlist_uri,
-      target_segment_duration: opts.target_segment_duration,
-      type: type
-    }
+      type = if state.max_segments, do: nil, else: :event
 
-    track = %Track{
-      stream: stream,
-      duration: 0.0,
-      segment_count: 0,
-      segment_extension: opts.segment_extension,
-      init_section: nil,
-      media_playlist: media_playlist,
-      pending_playlist: %{media_playlist | uri: append_to_path(media_playlist.uri, "_pending")},
-      codecs: opts.codecs,
-      mandatory?: resolve_mandatory(opts.mandatory?, stream),
-      last_timestamp_ns: nil,
-      last_duration_ns: nil,
-      base_pdt: state.timeline_reference,
-      base_timestamp_ns: nil,
-      pending_segments: [],
-      applied_discontinuities: MapSet.new()
-    }
+      media_playlist = %Media{
+        uri: media_playlist_uri,
+        target_segment_duration: opts.target_segment_duration,
+        type: type
+      }
 
-    new_state = put_in(state.tracks[track_id], track)
-    {new_state, []}
+      track = %Track{
+        stream: stream,
+        duration: 0.0,
+        segment_count: 0,
+        segment_extension: opts.segment_extension,
+        init_section: nil,
+        media_playlist: media_playlist,
+        pending_playlist: %{media_playlist | uri: append_to_path(media_playlist.uri, "_pending")},
+        codecs: opts.codecs,
+        mandatory?: resolve_mandatory(opts.mandatory?, stream),
+        last_timestamp_ns: nil,
+        last_duration_ns: nil,
+        base_pdt: state.timeline_reference,
+        base_timestamp_ns: nil,
+        pending_segments: [],
+        applied_discontinuities: MapSet.new(),
+        resume_incomplete?: false
+      }
+
+      new_state = put_in(state.tracks[track_id], track)
+      {new_state, []}
+    end
   end
 
   @doc """
@@ -475,71 +512,77 @@ defmodule HLS.Packager do
     dts = Keyword.get(opts, :dts)
     timestamp_ns = dts || pts
 
-    case skip_sync_point_for_track(state, track_id, track.segment_count + 1) do
-      {:skip, new_state} ->
-        warning = %Error{
-          code: :sync_point_skipped,
-          message: "Sync point #{track.segment_count + 1} was skipped for track '#{track_id}'",
-          details: %{
-            track_id: track_id,
-            sync_point: track.segment_count + 1
-          }
-        }
-
-        {:warning, warning, new_state}
+    case resume_track_ready?(track, track_id) do
+      {:error, error} ->
+        {:error, error, state}
 
       :ok ->
-        # RFC 8216: Segment duration MUST NOT exceed target duration
-        if duration > track.media_playlist.target_segment_duration do
-          error = %Error{
-            code: :segment_duration_over_target,
-            message:
-              "Segment duration #{duration}s exceeds target #{track.media_playlist.target_segment_duration}s (RFC 8216 violation)",
-            details: %{
-              track_id: track_id,
-              segment_index: track.segment_count + 1,
-              duration: duration,
-              target_duration: track.media_playlist.target_segment_duration
+        case skip_sync_point_for_track(state, track_id, track.segment_count + 1) do
+          {:skip, new_state} ->
+            warning = %Error{
+              code: :sync_point_skipped,
+              message: "Sync point #{track.segment_count + 1} was skipped for track '#{track_id}'",
+              details: %{
+                track_id: track_id,
+                sync_point: track.segment_count + 1
+              }
             }
-          }
 
-          {:error, error, state}
-        else
-          duration_ns = duration_to_ns(duration)
+            {:warning, warning, new_state}
 
-          if track.last_timestamp_ns && track.last_duration_ns do
-            expected = track.last_timestamp_ns + track.last_duration_ns
-
-            if abs(timestamp_ns - expected) > state.timing_tolerance_ns do
+          :ok ->
+            # RFC 8216: Segment duration MUST NOT exceed target duration
+            if duration > track.media_playlist.target_segment_duration do
               error = %Error{
-                code: :timing_drift,
+                code: :segment_duration_over_target,
                 message:
-                  "Timing drift detected on track '#{track_id}' at segment #{track.segment_count + 1}",
+                  "Segment duration #{duration}s exceeds target #{track.media_playlist.target_segment_duration}s (RFC 8216 violation)",
                 details: %{
                   track_id: track_id,
                   segment_index: track.segment_count + 1,
-                  timestamp_ns: timestamp_ns,
-                  expected_ns: expected,
-                  tolerance_ns: state.timing_tolerance_ns
+                  duration: duration,
+                  target_duration: track.media_playlist.target_segment_duration
                 }
               }
 
               {:error, error, state}
             else
-              do_put_segment(
-                state,
-                track_id,
-                track,
-                duration,
-                duration_ns,
-                pts,
-                dts,
-                timestamp_ns
-              )
+              duration_ns = duration_to_ns(duration)
+
+              if track.last_timestamp_ns && track.last_duration_ns do
+                expected = track.last_timestamp_ns + track.last_duration_ns
+
+                if abs(timestamp_ns - expected) > state.timing_tolerance_ns do
+                  error = %Error{
+                    code: :timing_drift,
+                    message:
+                      "Timing drift detected on track '#{track_id}' at segment #{track.segment_count + 1}",
+                    details: %{
+                      track_id: track_id,
+                      segment_index: track.segment_count + 1,
+                      timestamp_ns: timestamp_ns,
+                      expected_ns: expected,
+                      tolerance_ns: state.timing_tolerance_ns
+                    }
+                  }
+
+                  {:error, error, state}
+                else
+                  do_put_segment(
+                    state,
+                    track_id,
+                    track,
+                    duration,
+                    duration_ns,
+                    pts,
+                    dts,
+                    timestamp_ns
+                  )
+                end
+              else
+                do_put_segment(state, track_id, track, duration, duration_ns, pts, dts, timestamp_ns)
+              end
             end
-          else
-            do_put_segment(state, track_id, track, duration, duration_ns, pts, dts, timestamp_ns)
-          end
         end
     end
   end
@@ -1510,8 +1553,399 @@ defmodule HLS.Packager do
     }
   end
 
-  defp build_tracks_from_playlists(_master, _medias, _opts) do
-    # Simplified - would reconstruct Track structs from loaded playlists
-    %{}
+  defp build_tracks_from_playlists(%{
+         master_playlist: master,
+         media_playlists: medias,
+         max_segments: max_segments,
+         timeline_reference: timeline_reference
+       }) do
+    media_by_uri =
+      Enum.reduce(medias, %{}, fn %Media{uri: uri} = media, acc ->
+        Map.put(acc, to_string(uri), media)
+      end)
+
+    streams = master.streams ++ master.alternative_renditions
+
+    with {:ok, entries, referenced_uris} <-
+           build_resume_entries(streams, media_by_uri, master.uri),
+         :ok <- validate_no_extra_playlists(media_by_uri, referenced_uris),
+         {:ok, common_sync_point} <- compute_common_sync_point(entries),
+         {:ok, trimmed_entries} <- trim_entries_to_sync_point(entries, common_sync_point),
+         {:ok, tracks} <-
+           build_tracks_map(trimmed_entries, max_segments, timeline_reference) do
+      {:ok, {tracks, common_sync_point}}
+    end
+  end
+
+  defp build_resume_entries(streams, media_by_uri, manifest_uri) do
+    Enum.reduce_while(
+      streams,
+      {:ok, [], MapSet.new(), MapSet.new()},
+      fn stream, {:ok, acc, referenced_uris, track_ids} ->
+        case Map.fetch(stream, :uri) do
+          :error ->
+            error = %Error{
+              code: :resume_missing_playlist,
+              message: "Stream is missing a media playlist URI",
+              details: %{stream: stream}
+            }
+
+            {:halt, {:error, error}}
+
+          {:ok, nil} ->
+            error = %Error{
+              code: :resume_missing_playlist,
+              message: "Stream is missing a media playlist URI",
+              details: %{stream: stream}
+            }
+
+            {:halt, {:error, error}}
+
+          {:ok, uri} ->
+            track_id = derive_track_id_from_uri(manifest_uri, uri)
+
+            if MapSet.member?(track_ids, track_id) do
+              error = %Error{
+                code: :resume_inconsistent_playlist,
+                message: "Duplicate track id derived from media playlist URI",
+                details: %{track_id: track_id, uri: uri}
+              }
+
+              {:halt, {:error, error}}
+            else
+              {media, missing?} =
+                case Map.get(media_by_uri, to_string(uri)) do
+                  nil ->
+                    {%Media{uri: uri, media_sequence_number: 0, segments: []}, true}
+
+                  %Media{} = media ->
+                    {media, false}
+                end
+
+              entry = %{track_id: track_id, stream: stream, media: media, missing_media?: missing?}
+
+              {:cont,
+               {:ok, [entry | acc], MapSet.put(referenced_uris, to_string(uri)),
+                MapSet.put(track_ids, track_id)}}
+            end
+        end
+      end
+    )
+    |> case do
+      {:ok, entries, referenced_uris, _track_ids} ->
+        {:ok, Enum.reverse(entries), referenced_uris}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp validate_no_extra_playlists(media_by_uri, referenced_uris) do
+    extra =
+      media_by_uri
+      |> Map.keys()
+      |> Enum.reject(&MapSet.member?(referenced_uris, &1))
+
+    if extra == [] do
+      :ok
+    else
+      {:error,
+       %Error{
+         code: :resume_unexpected_playlist,
+         message: "Media playlists not referenced by the master playlist",
+         details: %{uris: extra}
+       }}
+    end
+  end
+
+  defp compute_common_sync_point([]) do
+    {:error,
+     %Error{
+       code: :resume_inconsistent_playlist,
+       message: "No tracks available to resume",
+       details: %{}
+     }}
+  end
+
+  defp compute_common_sync_point(entries) do
+    counts =
+      Enum.map(entries, fn entry ->
+        entry.media.media_sequence_number + length(entry.media.segments)
+      end)
+
+    {:ok, Enum.min(counts)}
+  end
+
+  defp trim_entries_to_sync_point(entries, common_sync_point) do
+    Enum.reduce_while(entries, {:ok, []}, fn entry, {:ok, acc} ->
+      media = entry.media
+      media_sequence = media.media_sequence_number
+      segment_count = media_sequence + length(media.segments)
+
+      cond do
+        media_sequence > common_sync_point ->
+          error = %Error{
+            code: :resume_inconsistent_playlist,
+            message: "Media playlist starts after the common sync point",
+            details: %{track_id: entry.track_id, sync_point: common_sync_point}
+          }
+
+          {:halt, {:error, error}}
+
+        segment_count <= common_sync_point ->
+          {:cont, {:ok, [entry | acc]}}
+
+        true ->
+          excess = segment_count - common_sync_point
+          trimmed_segments = Enum.drop(media.segments, -excess)
+          trimmed_media = %{media | segments: trimmed_segments}
+          trimmed_entry = %{entry | media: trimmed_media}
+          {:cont, {:ok, [trimmed_entry | acc]}}
+      end
+    end)
+    |> case do
+      {:ok, trimmed} -> {:ok, Enum.reverse(trimmed)}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp build_tracks_map(entries, max_segments, timeline_reference) do
+    tracks =
+      Enum.reduce(entries, %{}, fn entry, acc ->
+        {:ok, track} = build_track_from_entry(entry, max_segments, timeline_reference)
+        Map.put(acc, entry.track_id, track)
+      end)
+
+    {:ok, tracks}
+  end
+
+  defp build_track_from_entry(
+         %{stream: stream, media: media, missing_media?: missing_media?},
+         max_segments,
+         timeline_reference
+       ) do
+    segment_extension =
+      case infer_segment_extension(media.segments) do
+        {:ok, ext} -> ext
+        {:error, _error} -> nil
+      end
+
+    init_section = last_init_section(media.segments)
+
+    type = if max_segments, do: nil, else: media.type || :event
+
+    duration = Media.compute_playlist_duration(media)
+    segment_count = media.media_sequence_number + length(media.segments)
+
+    resume_incomplete? =
+      missing_media? or is_nil(segment_extension) or is_nil(media.target_segment_duration)
+
+    {:ok,
+     %Track{
+       stream: stream,
+       duration: duration,
+       segment_count: segment_count,
+       segment_extension: segment_extension,
+       init_section: init_section,
+       media_playlist: %{media | type: type},
+       pending_playlist: %{media | uri: append_to_path(media.uri, "_pending"), segments: []},
+       codecs: [],
+       mandatory?: resolve_mandatory(nil, stream),
+       last_timestamp_ns: nil,
+       last_duration_ns: nil,
+       base_pdt: timeline_reference,
+       base_timestamp_ns: nil,
+       pending_segments: [],
+       applied_discontinuities: MapSet.new(),
+       resume_incomplete?: resume_incomplete?
+     }}
+  end
+
+  defp infer_segment_extension([]) do
+    {:error,
+     %Error{
+       code: :resume_unknown_segment_extension,
+       message: "Unable to infer segment extension from an empty media playlist",
+       details: %{}
+     }}
+  end
+
+  defp infer_segment_extension(segments) do
+    ext =
+      segments
+      |> List.last()
+      |> Map.get(:uri)
+      |> to_string()
+      |> Path.extname()
+
+    if ext == "" do
+      {:error,
+       %Error{
+         code: :resume_unknown_segment_extension,
+         message: "Unable to infer segment extension from media playlist",
+         details: %{}
+       }}
+    else
+      {:ok, ext}
+    end
+  end
+
+  defp last_init_section(segments) do
+    Enum.reduce(segments, nil, fn seg, acc ->
+      if seg.init_section, do: seg.init_section, else: acc
+    end)
+  end
+
+  defp derive_track_id_from_uri(manifest_uri, media_uri) do
+    manifest_base =
+      manifest_uri
+      |> to_string()
+      |> Path.basename()
+      |> Path.rootname()
+
+    media_base =
+      media_uri
+      |> to_string()
+      |> Path.basename()
+      |> Path.rootname()
+
+    prefix = manifest_base <> "_"
+
+    if String.starts_with?(media_base, prefix) do
+      String.replace_prefix(media_base, prefix, "")
+    else
+      media_base
+    end
+  end
+
+  defp build_track_stream(state, track_id, stream) do
+    case stream do
+      %AlternativeRendition{type: :closed_captions} = alt ->
+        {%{alt | uri: nil}, build_track_variant_uri(state.manifest_uri, track_id)}
+
+      stream ->
+        stream_uri = build_track_variant_uri(state.manifest_uri, track_id)
+        {%{stream | uri: stream_uri}, stream_uri}
+    end
+  end
+
+  defp resume_track_ready?(track, track_id) do
+    missing =
+      []
+      |> maybe_add_missing(:segment_extension, is_nil(track.segment_extension))
+      |> maybe_add_missing(
+        :target_segment_duration,
+        is_nil(track.media_playlist.target_segment_duration)
+      )
+
+    if missing == [] do
+      :ok
+    else
+      {:error,
+       %Error{
+         code: :resume_track_not_ready,
+         message: "Track '#{track_id}' is not ready after resume",
+         details: %{track_id: track_id, missing: missing}
+       }}
+    end
+  end
+
+  defp maybe_add_missing(list, _field, false), do: list
+  defp maybe_add_missing(list, field, true), do: [field | list]
+
+  defp reconcile_incomplete_track(track, track_id, stream, media_playlist_uri, opts, mandatory?) do
+    cond do
+      track.stream != stream ->
+        {:error,
+         %Error{
+           code: :track_conflict,
+           message: "Track #{track_id} already exists with a different stream",
+           details: %{track_id: track_id}
+         }}
+
+      track.media_playlist.uri != media_playlist_uri ->
+        {:error,
+         %Error{
+           code: :track_conflict,
+           message: "Track #{track_id} already exists with a different playlist URI",
+           details: %{track_id: track_id}
+         }}
+
+      not is_nil(track.media_playlist.target_segment_duration) and
+          track.media_playlist.target_segment_duration != opts.target_segment_duration ->
+        {:error,
+         %Error{
+           code: :track_conflict,
+           message: "Track #{track_id} already exists with a different target duration",
+           details: %{track_id: track_id}
+         }}
+
+      not is_nil(track.segment_extension) and track.segment_extension != opts.segment_extension ->
+        {:error,
+         %Error{
+           code: :track_conflict,
+           message: "Track #{track_id} already exists with a different extension",
+           details: %{track_id: track_id}
+         }}
+
+      track.codecs != [] and track.codecs != opts.codecs ->
+        {:error,
+         %Error{
+           code: :track_conflict,
+           message: "Track #{track_id} already exists with different codecs",
+           details: %{track_id: track_id}
+         }}
+
+      track.mandatory? != mandatory? ->
+        {:error,
+         %Error{
+           code: :track_conflict,
+           message: "Track #{track_id} already exists with a different mandatory flag",
+           details: %{track_id: track_id}
+         }}
+
+      true ->
+        target_duration =
+          track.media_playlist.target_segment_duration || opts.target_segment_duration
+
+        updated_media = %{track.media_playlist | target_segment_duration: target_duration}
+        updated_pending = %{track.pending_playlist | target_segment_duration: target_duration}
+
+        updated_track = %{
+          track
+          | segment_extension: track.segment_extension || opts.segment_extension,
+            media_playlist: updated_media,
+            pending_playlist: updated_pending,
+            codecs: if(track.codecs == [], do: opts.codecs, else: track.codecs),
+            mandatory?: mandatory?,
+            resume_incomplete?: false
+        }
+
+        {:ok, updated_track}
+    end
+  end
+
+  defp track_spec_matches?(track, stream, media_playlist_uri, opts, mandatory?) do
+    codecs_match =
+      cond do
+        track.codecs == opts.codecs ->
+          true
+
+        track.codecs == [] and is_struct(stream, VariantStream) ->
+          Enum.all?(opts.codecs, &(&1 in stream.codecs))
+
+        track.codecs == [] and is_struct(stream, AlternativeRendition) ->
+          true
+
+        true ->
+          false
+      end
+
+    track.stream == stream and
+      track.segment_extension == opts.segment_extension and
+      track.media_playlist.target_segment_duration == opts.target_segment_duration and
+      track.media_playlist.uri == media_playlist_uri and
+      codecs_match and
+      track.mandatory? == mandatory?
   end
 end

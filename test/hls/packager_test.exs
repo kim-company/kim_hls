@@ -34,6 +34,7 @@ defmodule HLS.PackagerTest do
   alias HLS.Packager
   alias HLS.VariantStream
   alias HLS.AlternativeRendition
+  alias HLS.Playlist.Master
 
   # Test storage implemented as Agent
   defmodule TestStorage do
@@ -2544,6 +2545,295 @@ defmodule HLS.PackagerTest do
 
       assert length(high_pdts) == length(low_pdts)
       assert high_pdts == low_pdts
+    end
+  end
+
+  describe "resume" do
+    test "trims to the common sync point and schedules a discontinuity", %{
+      manifest_uri: manifest_uri,
+      storage: storage
+    } do
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri)
+
+      {state, []} =
+        Packager.add_track(state, "video",
+          stream: %VariantStream{
+            bandwidth: 2_000_000,
+            codecs: ["avc1.64001f"],
+            audio: "audio-group"
+          },
+          segment_extension: ".ts",
+          target_segment_duration: 6.0,
+          codecs: ["avc1.64001f"]
+        )
+
+      {state, []} =
+        Packager.add_track(state, "audio_en",
+          stream: %AlternativeRendition{
+            type: :audio,
+            group_id: "audio-group",
+            name: "English",
+            language: "en",
+            uri: URI.new!("audio_en.m3u8")
+          },
+          segment_extension: ".ts",
+          target_segment_duration: 6.0,
+          codecs: ["mp4a.40.2"]
+        )
+
+      state = add_segments(state, storage, manifest_uri, "video", 3, 6.0)
+      state = add_segments(state, storage, manifest_uri, "audio_en", 3, 6.0)
+
+      {state, actions} = Packager.sync(state, 3)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      state = add_segments(state, storage, manifest_uri, "video", 1, 6.0)
+      {state, actions} = Packager.sync(state, 4)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      master_content = load_master_content(storage, manifest_uri)
+      master = HLS.Playlist.unmarshal(master_content, %Master{uri: manifest_uri})
+
+      media_playlists =
+        state.tracks
+        |> Map.values()
+        |> Enum.map(& &1.media_playlist)
+
+      {:ok, resumed_state} =
+        Packager.resume(master_playlist: master, media_playlists: media_playlists)
+
+      assert resumed_state.tracks["video"].segment_count == 3
+      assert length(resumed_state.tracks["video"].media_playlist.segments) == 3
+      assert length(resumed_state.tracks["audio_en"].media_playlist.segments) == 3
+
+      [discontinuity] = resumed_state.pending_discontinuities
+      assert discontinuity.sync_point == 4
+      assert discontinuity.reason == :resume
+    end
+
+    test "add_track is idempotent after resume when spec matches", %{
+      manifest_uri: manifest_uri,
+      storage: storage
+    } do
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri)
+
+      {state, []} =
+        Packager.add_track(state, "video",
+          stream: %VariantStream{bandwidth: 2_000_000, codecs: ["avc1.64001f"]},
+          segment_extension: ".ts",
+          target_segment_duration: 6.0,
+          codecs: ["avc1.64001f"]
+        )
+
+      state = add_segments(state, storage, manifest_uri, "video", 3, 6.0)
+      {state, actions} = Packager.sync(state, 3)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      master_content = load_master_content(storage, manifest_uri)
+      master = HLS.Playlist.unmarshal(master_content, %Master{uri: manifest_uri})
+
+      media_playlists =
+        state.tracks
+        |> Map.values()
+        |> Enum.map(& &1.media_playlist)
+
+      {:ok, resumed_state} =
+        Packager.resume(master_playlist: master, media_playlists: media_playlists)
+
+      {final_state, []} =
+        Packager.add_track(resumed_state, "video",
+          stream: %VariantStream{bandwidth: 2_000_000, codecs: ["avc1.64001f"]},
+          segment_extension: ".ts",
+          target_segment_duration: 6.0,
+          codecs: ["avc1.64001f"]
+        )
+
+      assert final_state == resumed_state
+    end
+
+    test "allows resume with missing playlists but blocks segments until reconciled", %{
+      manifest_uri: manifest_uri,
+      storage: storage
+    } do
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri)
+
+      {state, []} =
+        Packager.add_track(state, "video",
+          stream: %VariantStream{bandwidth: 2_000_000, codecs: ["avc1.64001f"]},
+          segment_extension: ".ts",
+          target_segment_duration: 6.0,
+          codecs: ["avc1.64001f"]
+        )
+
+      {state, []} =
+        Packager.add_track(state, "audio_en",
+          stream: %AlternativeRendition{
+            type: :audio,
+            group_id: "audio-group",
+            name: "English",
+            language: "en",
+            uri: URI.new!("audio_en.m3u8")
+          },
+          segment_extension: ".ts",
+          target_segment_duration: 6.0,
+          codecs: ["mp4a.40.2"]
+        )
+
+      state = add_segments(state, storage, manifest_uri, "video", 3, 6.0)
+      state = add_segments(state, storage, manifest_uri, "audio_en", 3, 6.0)
+
+      {state, actions} = Packager.sync(state, 3)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      master_content = load_master_content(storage, manifest_uri)
+      master = HLS.Playlist.unmarshal(master_content, %Master{uri: manifest_uri})
+
+      media_playlists = [state.tracks["video"].media_playlist]
+
+      {:ok, resumed_state} =
+        Packager.resume(master_playlist: master, media_playlists: media_playlists)
+
+      assert resumed_state.tracks["audio_en"].resume_incomplete?
+
+      assert {:error, %Packager.Error{code: :resume_track_not_ready}, _state} =
+               Packager.put_segment(resumed_state, "audio_en", duration: 6.0, pts: 0)
+
+      {reconciled_state, []} =
+        Packager.add_track(resumed_state, "audio_en",
+          stream: %AlternativeRendition{
+            type: :audio,
+            group_id: "audio-group",
+            name: "English",
+            language: "en",
+            uri: URI.new!("audio_en.m3u8")
+          },
+          segment_extension: ".ts",
+          target_segment_duration: 6.0,
+          codecs: ["mp4a.40.2"]
+        )
+
+      {_, [action]} =
+        Packager.put_segment(reconciled_state, "audio_en", duration: 6.0, pts: 0)
+
+      assert %Packager.Action.UploadSegment{} = action
+    end
+
+    test "returns error when extra media playlists are provided", %{
+      manifest_uri: manifest_uri,
+      storage: storage
+    } do
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri)
+
+      {state, []} =
+        Packager.add_track(state, "video",
+          stream: %VariantStream{bandwidth: 2_000_000, codecs: ["avc1.64001f"]},
+          segment_extension: ".ts",
+          target_segment_duration: 6.0,
+          codecs: ["avc1.64001f"]
+        )
+
+      state = add_segments(state, storage, manifest_uri, "video", 3, 6.0)
+      {state, actions} = Packager.sync(state, 3)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      master_content = load_master_content(storage, manifest_uri)
+      master = HLS.Playlist.unmarshal(master_content, %Master{uri: manifest_uri})
+
+      extra_playlist =
+        state.tracks["video"].media_playlist
+        |> Map.put(:uri, URI.new!("extra.m3u8"))
+
+      media_playlists = [state.tracks["video"].media_playlist, extra_playlist]
+
+      assert {:error, %Packager.Error{code: :resume_unexpected_playlist}} =
+               Packager.resume(master_playlist: master, media_playlists: media_playlists)
+    end
+
+    test "blocks segments when extension is unknown until reconciled", %{
+      manifest_uri: manifest_uri,
+      storage: storage
+    } do
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri)
+
+      {state, []} =
+        Packager.add_track(state, "video",
+          stream: %VariantStream{bandwidth: 2_000_000, codecs: ["avc1.64001f"]},
+          segment_extension: ".ts",
+          target_segment_duration: 6.0,
+          codecs: ["avc1.64001f"]
+        )
+
+      state = add_segments(state, storage, manifest_uri, "video", 3, 6.0)
+      {state, actions} = Packager.sync(state, 3)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      master_content = load_master_content(storage, manifest_uri)
+      master = HLS.Playlist.unmarshal(master_content, %Master{uri: manifest_uri})
+
+      empty_media =
+        state.tracks["video"].media_playlist
+        |> Map.put(:segments, [])
+        |> Map.put(:media_sequence_number, 0)
+
+      {:ok, resumed_state} =
+        Packager.resume(master_playlist: master, media_playlists: [empty_media])
+
+      assert resumed_state.tracks["video"].resume_incomplete?
+
+      assert {:error, %Packager.Error{code: :resume_track_not_ready}, _state} =
+               Packager.put_segment(resumed_state, "video", duration: 6.0, pts: 0)
+
+      {reconciled_state, []} =
+        Packager.add_track(resumed_state, "video",
+          stream: %VariantStream{bandwidth: 2_000_000, codecs: ["avc1.64001f"]},
+          segment_extension: ".ts",
+          target_segment_duration: 6.0,
+          codecs: ["avc1.64001f"]
+        )
+
+      {_, [action]} =
+        Packager.put_segment(reconciled_state, "video", duration: 6.0, pts: 0)
+
+      assert %Packager.Action.UploadSegment{} = action
+    end
+
+    test "allows resume when a variant playlist is missing", %{
+      manifest_uri: manifest_uri,
+      storage: storage
+    } do
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri)
+
+      {state, []} =
+        Packager.add_track(state, "video_high",
+          stream: %VariantStream{bandwidth: 2_000_000, codecs: ["avc1.64001f"]},
+          segment_extension: ".ts",
+          target_segment_duration: 6.0,
+          codecs: ["avc1.64001f"]
+        )
+
+      {state, []} =
+        Packager.add_track(state, "video_low",
+          stream: %VariantStream{bandwidth: 500_000, codecs: ["avc1.64001f"]},
+          segment_extension: ".ts",
+          target_segment_duration: 6.0,
+          codecs: ["avc1.64001f"]
+        )
+
+      state = add_segments(state, storage, manifest_uri, "video_high", 3, 6.0)
+      state = add_segments(state, storage, manifest_uri, "video_low", 3, 6.0)
+
+      {state, actions} = Packager.sync(state, 3)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      master_content = load_master_content(storage, manifest_uri)
+      master = HLS.Playlist.unmarshal(master_content, %Master{uri: manifest_uri})
+
+      media_playlists = [state.tracks["video_high"].media_playlist]
+
+      {:ok, resumed_state} =
+        Packager.resume(master_playlist: master, media_playlists: media_playlists)
+
+      assert resumed_state.tracks["video_low"].resume_incomplete?
     end
   end
 end

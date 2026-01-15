@@ -116,6 +116,11 @@ Key options for `HLS.Packager.new/1`:
 - `max_segments` - Maximum segments to retain (enables sliding window mode with automatic cleanup)
 
 For resuming from existing playlists, use `HLS.Packager.resume/1` with loaded playlist data.
+The caller must load the master and media playlists from storage; resume trims tracks to the
+last common sync point and schedules a discontinuity at the next segment.
+If a referenced media playlist is missing or empty, the track is marked incomplete and
+`put_segment/3` returns `{:error, %HLS.Packager.Error{code: :resume_track_not_ready}, state}`
+until the caller reconciles it via `add_track/3` and `put_init_section/2`.
 
 ## Packager Edge Cases (Production)
 
