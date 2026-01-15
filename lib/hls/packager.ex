@@ -118,49 +118,6 @@ defmodule HLS.Packager do
       @type t :: %__MODULE__{uri: URI.t(), type: :media | :pending | :master}
     end
 
-    defmodule Warning do
-      @moduledoc """
-      RFC 8216 compliance warning or error.
-
-      Warnings allow the caller to decide how to handle violations:
-      - `:error` severity: RFC violation that may break playback
-      - `:warning` severity: RFC violation that may cause issues
-      - `:info` severity: Non-critical informational message
-
-      ## Example
-
-          %Action.Warning{
-            severity: :error,
-            code: :segment_exceeds_target_duration,
-            message: "Segment duration 7.0s exceeds target 6.0s",
-            details: %{
-              track_id: "video",
-              duration: 7.0,
-              target: 6.0
-            }
-          }
-      """
-      defstruct [:severity, :code, :message, :details]
-
-      @type severity :: :error | :warning | :info
-      @type code ::
-              :segment_exceeds_target_duration
-              | :timestamp_drift_detected
-              | :unsynchronized_discontinuity
-              | :track_behind_sync_point
-              | :mandatory_track_behind_sync_point
-              | :mandatory_track_timing_mismatch
-              | :timing_discontinuity_detected
-              | :discontinuity_sync_point_passed
-
-      @type t :: %__MODULE__{
-              severity: severity(),
-              code: code(),
-              message: String.t(),
-              details: map()
-            }
-    end
-
     @type t ::
             UploadSegment.t()
             | UploadInitSection.t()
@@ -168,7 +125,26 @@ defmodule HLS.Packager do
             | DeleteSegment.t()
             | DeleteInitSection.t()
             | DeletePlaylist.t()
-            | Warning.t()
+  end
+
+  defmodule Error do
+    @moduledoc """
+    RFC 8216 compliance error or stall signal.
+
+    These errors are returned instead of producing non-compliant playlists.
+    """
+
+    defexception [:code, :message, :details]
+
+    @type code ::
+            :segment_duration_over_target
+            | :timing_drift
+            | :discontinuity_point_missed
+            | :track_timing_mismatch_at_sync
+            | :mandatory_track_missing_segment_at_sync
+            | :sync_point_skipped
+
+    @type t :: %__MODULE__{code: code(), message: String.t(), details: map()}
   end
 
   defmodule Track do
@@ -218,7 +194,8 @@ defmodule HLS.Packager do
           max_segments: pos_integer() | nil,
           timeline_reference: DateTime.t(),
           timing_tolerance_ns: non_neg_integer(),
-          pending_discontinuities: list()
+          pending_discontinuities: list(),
+          skipped_sync_points: %{pos_integer() => MapSet.t(track_id())}
         }
 
   defstruct [
@@ -228,7 +205,8 @@ defmodule HLS.Packager do
     master_written?: false,
     tracks: %{},
     max_segments: nil,
-    pending_discontinuities: []
+    pending_discontinuities: [],
+    skipped_sync_points: %{}
   ]
 
   @doc """
@@ -259,7 +237,8 @@ defmodule HLS.Packager do
         timing_tolerance_ns: validated.timing_tolerance_ns,
         tracks: %{},
         master_written?: false,
-        pending_discontinuities: []
+        pending_discontinuities: [],
+        skipped_sync_points: %{}
       }
 
       {:ok, state}
@@ -305,7 +284,8 @@ defmodule HLS.Packager do
         timing_tolerance_ns: validated.timing_tolerance_ns,
         master_written?: true,
         tracks: build_tracks_from_playlists(master, medias, validated),
-        pending_discontinuities: []
+        pending_discontinuities: [],
+        skipped_sync_points: %{}
       }
 
       {:ok, state}
@@ -342,6 +322,7 @@ defmodule HLS.Packager do
     end
 
     opts = validate_add_track_opts!(opts)
+
     stream =
       case opts.stream do
         %AlternativeRendition{type: :closed_captions} = alt ->
@@ -470,7 +451,7 @@ defmodule HLS.Packager do
   The caller must provide PTS in nanoseconds; DTS may be provided for video and
   is used instead of PTS when present.
 
-  May also return warning actions if RFC 8216 compliance issues are detected.
+  Returns an error when RFC 8216 compliance issues are detected.
 
   ## Examples
 
@@ -483,7 +464,9 @@ defmodule HLS.Packager do
       {state, actions} = Packager.confirm_upload(state, action.id)
   """
   @spec put_segment(t(), track_id(), keyword()) ::
-          {t(), [Action.UploadSegment.t() | Action.Warning.t()]}
+          {t(), [Action.UploadSegment.t()]}
+          | {:warning, Error.t(), t()}
+          | {:error, Error.t(), t()}
   def put_segment(state, track_id, opts) do
     track = Map.fetch!(state.tracks, track_id)
     duration = Keyword.fetch!(opts, :duration)
@@ -491,14 +474,80 @@ defmodule HLS.Packager do
     dts = Keyword.get(opts, :dts)
     timestamp_ns = dts || pts
 
+    case skip_sync_point_for_track(state, track_id, track.segment_count + 1) do
+      {:skip, new_state} ->
+        warning = %Error{
+          code: :sync_point_skipped,
+          message: "Sync point #{track.segment_count + 1} was skipped for track '#{track_id}'",
+          details: %{
+            track_id: track_id,
+            sync_point: track.segment_count + 1
+          }
+        }
+
+        {:warning, warning, new_state}
+
+      :ok ->
+        # RFC 8216: Segment duration MUST NOT exceed target duration
+        if duration > track.media_playlist.target_segment_duration do
+          error = %Error{
+            code: :segment_duration_over_target,
+            message:
+              "Segment duration #{duration}s exceeds target #{track.media_playlist.target_segment_duration}s (RFC 8216 violation)",
+            details: %{
+              track_id: track_id,
+              segment_index: track.segment_count + 1,
+              duration: duration,
+              target_duration: track.media_playlist.target_segment_duration
+            }
+          }
+
+          {:error, error, state}
+        else
+          duration_ns = duration_to_ns(duration)
+
+          if track.last_timestamp_ns && track.last_duration_ns do
+            expected = track.last_timestamp_ns + track.last_duration_ns
+
+            if abs(timestamp_ns - expected) > state.timing_tolerance_ns do
+              error = %Error{
+                code: :timing_drift,
+                message:
+                  "Timing drift detected on track '#{track_id}' at segment #{track.segment_count + 1}",
+                details: %{
+                  track_id: track_id,
+                  segment_index: track.segment_count + 1,
+                  timestamp_ns: timestamp_ns,
+                  expected_ns: expected,
+                  tolerance_ns: state.timing_tolerance_ns
+                }
+              }
+
+              {:error, error, state}
+            else
+              do_put_segment(
+                state,
+                track_id,
+                track,
+                duration,
+                duration_ns,
+                pts,
+                dts,
+                timestamp_ns
+              )
+            end
+          else
+            do_put_segment(state, track_id, track, duration, duration_ns, pts, dts, timestamp_ns)
+          end
+        end
+    end
+  end
+
+  defp do_put_segment(state, track_id, track, duration, duration_ns, pts, dts, timestamp_ns) do
     next_index = track.segment_count + 1
-    duration_ns = duration_to_ns(duration)
 
     segment_uri =
       relative_segment_uri(track.media_playlist.uri, track.segment_extension, next_index)
-
-    {state, timing_warnings} =
-      maybe_schedule_timing_discontinuity(state, track_id, next_index, timestamp_ns, duration_ns)
 
     {discontinuity, state, segment_pdt, base_pdt, base_timestamp_ns} =
       apply_discontinuity_if_needed(state, track_id, next_index, timestamp_ns, track)
@@ -539,28 +588,7 @@ defmodule HLS.Packager do
       init_section_uri: segment.init_section && segment.init_section.uri
     }
 
-    # RFC 8216: Segment duration MUST NOT exceed target duration
-    warnings =
-      if duration > track.media_playlist.target_segment_duration do
-        [
-          %Action.Warning{
-            severity: :error,
-            code: :segment_exceeds_target_duration,
-            message:
-              "Segment duration #{duration}s exceeds target #{track.media_playlist.target_segment_duration}s (RFC 8216 violation)",
-            details: %{
-              track_id: track_id,
-              segment_index: next_index,
-              duration: duration,
-              target_duration: track.media_playlist.target_segment_duration
-            }
-          }
-        ]
-      else
-        []
-      end
-
-    {new_state, [action | timing_warnings ++ warnings]}
+    {new_state, [action]}
   end
 
   @doc """
@@ -633,22 +661,48 @@ defmodule HLS.Packager do
 
   @doc """
   Marks all tracks to add discontinuity to next segment.
-
-  Only effective when `max_segments` is configured (sliding window).
-
-  May return warning actions if tracks are not synchronized.
   """
-  @spec discontinue(t()) :: {t(), [Action.Warning.t()]}
-  def discontinue(state) when is_nil(state.max_segments), do: {state, []}
-
+  @spec discontinue(t()) :: {t(), []} | {:error, Error.t(), t()}
   def discontinue(state) do
     timeline_reference = DateTime.utc_now(:millisecond)
     sync_point = next_discontinuity_sync_point(state)
 
-    {new_state, warnings} =
-      schedule_discontinuity(state, sync_point, :manual, timeline_reference)
+    case schedule_discontinuity(state, sync_point, :manual, timeline_reference) do
+      {:ok, new_state} ->
+        {%{new_state | timeline_reference: timeline_reference}, []}
 
-    {%{new_state | timeline_reference: timeline_reference}, warnings}
+      {:error, error, _state} ->
+        {:error, error, state}
+    end
+  end
+
+  @doc """
+  Skips a sync point across all tracks and schedules a discontinuity.
+
+  Callers should invoke this when a segment is rejected for RFC compliance,
+  so all tracks drop the same segment index before continuing.
+  """
+  @spec skip_sync_point(t(), pos_integer()) :: {t(), []} | {:error, Error.t(), t()}
+  def skip_sync_point(state, sync_point) when sync_point > 0 do
+    state =
+      Map.update(
+        state,
+        :skipped_sync_points,
+        %{sync_point => MapSet.new(Map.keys(state.tracks))},
+        fn skips ->
+          Map.put_new(skips, sync_point, MapSet.new(Map.keys(state.tracks)))
+        end
+      )
+
+    timeline_reference = DateTime.utc_now(:millisecond)
+
+    case schedule_discontinuity(state, sync_point, :skip, timeline_reference) do
+      {:ok, new_state} ->
+        {%{new_state | timeline_reference: timeline_reference}, []}
+
+      {:error, error, _state} ->
+        {:error, error, state}
+    end
   end
 
   @doc """
@@ -658,8 +712,6 @@ defmodule HLS.Packager do
   to write updated playlists. May also return delete actions if sliding window
   is enabled.
 
-  May also return warning actions if RFC 8216 compliance issues are detected.
-
   ## Examples
 
       {state, actions} = Packager.sync(state, 5)
@@ -668,14 +720,17 @@ defmodule HLS.Packager do
       #   %Action.WritePlaylist{type: :media, ...},
       #   %Action.WritePlaylist{type: :master, ...},
       #   %Action.DeleteSegment{...},  # if sliding window
-      #   %Action.Warning{...},  # if RFC violations detected
       # ]
   """
-  @spec sync(t(), pos_integer()) :: {t(), [Action.t()]}
+  @spec sync(t(), pos_integer()) ::
+          {t(), [Action.t()]} | {:warning, [Error.t()], t()} | {:error, Error.t(), t()}
   def sync(state, sync_point) do
     case sync_if_ready(state, sync_point) do
-      {:not_ready, warnings} ->
-        {state, warnings}
+      {:warning, warnings} ->
+        {:warning, warnings, state}
+
+      {:error, error} ->
+        {:error, error, state}
 
       :ready ->
         do_sync(state, sync_point)
@@ -801,7 +856,12 @@ defmodule HLS.Packager do
 
       # Apply sliding window
       {windowed_media, removed_segments, updated_track} =
-        apply_sliding_window(updated_media, state.max_segments, track, state.pending_discontinuities)
+        apply_sliding_window(
+          updated_media,
+          state.max_segments,
+          track,
+          state.pending_discontinuities
+        )
 
       # Update pending playlist
       updated_pending = %{track.pending_playlist | segments: remaining_segments}
@@ -1130,9 +1190,8 @@ defmodule HLS.Packager do
 
         if available < sync_point do
           [
-            %Action.Warning{
-              severity: :warning,
-              code: :mandatory_track_behind_sync_point,
+            %Error{
+              code: :mandatory_track_missing_segment_at_sync,
               message:
                 "Mandatory track '#{id}' only has #{available} segments but sync point is #{sync_point}",
               details: %{
@@ -1149,19 +1208,16 @@ defmodule HLS.Packager do
       end)
 
     if warnings != [] do
-      {:not_ready, warnings}
+      {:warning, warnings}
     else
-      {aligned?, alignment_warnings} = check_mandatory_alignment(mandatory_tracks, sync_point, state)
-
-      if aligned? do
-        :ready
-      else
-        {:not_ready, alignment_warnings}
+      case check_mandatory_alignment(mandatory_tracks, sync_point, state) do
+        :ok -> :ready
+        {:error, error} -> {:error, error}
       end
     end
   end
 
-  defp check_mandatory_alignment([], _sync_point, _state), do: {true, []}
+  defp check_mandatory_alignment([], _sync_point, _state), do: :ok
 
   defp check_mandatory_alignment(tracks, sync_point, state) do
     {timestamps, missing} =
@@ -1174,55 +1230,71 @@ defmodule HLS.Packager do
         end
       end)
 
-    missing_warnings =
-      Enum.map(missing, fn id ->
-        %Action.Warning{
-          severity: :warning,
-          code: :mandatory_track_timing_mismatch,
-          message: "Mandatory track '#{id}' is missing timing information at sync point",
-          details: %{track_id: id, sync_point: sync_point}
-        }
-      end)
-
     case timestamps do
       [] ->
-        {false, missing_warnings}
+        {:error,
+         %Error{
+           code: :track_timing_mismatch_at_sync,
+           message: "No mandatory tracks have timing information at sync point #{sync_point}",
+           details: %{sync_point: sync_point, missing_tracks: missing}
+         }}
 
-      [{_id, reference_ts} | rest] ->
-        {mismatches, warnings} =
-          Enum.reduce(rest, {[], []}, fn {id, ts}, {mismatch_ids, warn_acc} ->
+      [{reference_id, reference_ts} | rest] ->
+        mismatches =
+          Enum.reduce(rest, [], fn {id, ts}, acc ->
             if abs(ts - reference_ts) > state.timing_tolerance_ns do
-              {
-                [id | mismatch_ids],
-                [
-                  %Action.Warning{
-                    severity: :warning,
-                    code: :mandatory_track_timing_mismatch,
-                    message:
-                      "Mandatory track '#{id}' has misaligned timing at sync point #{sync_point}",
-                    details: %{
-                      track_id: id,
-                      sync_point: sync_point,
-                      timestamp_ns: ts,
-                      expected_ns: reference_ts,
-                      tolerance_ns: state.timing_tolerance_ns
-                    }
-                  }
-                  | warn_acc
-                ]
-              }
+              [%{track_id: id, timestamp_ns: ts} | acc]
             else
-              {mismatch_ids, warn_acc}
+              acc
             end
           end)
 
-        {mismatches == [], warnings ++ missing_warnings}
+        if mismatches == [] and missing == [] do
+          :ok
+        else
+          {:error,
+           %Error{
+             code: :track_timing_mismatch_at_sync,
+             message: "Tracks are misaligned at sync point #{sync_point}",
+             details: %{
+               sync_point: sync_point,
+               reference_track_id: reference_id,
+               reference_timestamp_ns: reference_ts,
+               mismatched_tracks: mismatches,
+               missing_tracks: missing,
+               tolerance_ns: state.timing_tolerance_ns
+             }
+           }}
+        end
     end
   end
 
   defp segment_at_sync_point(track, sync_point) do
     segments = track.media_playlist.segments ++ track.pending_playlist.segments
     Enum.at(segments, sync_point - 1)
+  end
+
+  defp skip_sync_point_for_track(state, track_id, sync_point) do
+    case Map.get(state.skipped_sync_points, sync_point) do
+      nil ->
+        :ok
+
+      track_ids ->
+        if MapSet.member?(track_ids, track_id) do
+          remaining = MapSet.delete(track_ids, track_id)
+
+          updated =
+            if MapSet.size(remaining) == 0 do
+              Map.delete(state.skipped_sync_points, sync_point)
+            else
+              Map.put(state.skipped_sync_points, sync_point, remaining)
+            end
+
+          {:skip, %{state | skipped_sync_points: updated}}
+        else
+          :ok
+        end
+    end
   end
 
   defp apply_discontinuity_if_needed(state, track_id, segment_index, timestamp_ns, track) do
@@ -1248,56 +1320,15 @@ defmodule HLS.Packager do
     end
   end
 
-  defp maybe_schedule_timing_discontinuity(
+  defp schedule_discontinuity(
          state,
-         track_id,
-         segment_index,
-         timestamp_ns,
-         _duration_ns
+         sync_point,
+         reason,
+         pdt_reference,
+         timestamp_reference_ns \\ nil
        ) do
-    track = Map.fetch!(state.tracks, track_id)
-
-    if track.last_timestamp_ns && track.last_duration_ns do
-      expected = track.last_timestamp_ns + track.last_duration_ns
-
-      if abs(timestamp_ns - expected) > state.timing_tolerance_ns do
-        timeline_reference = DateTime.utc_now(:millisecond)
-
-        {state, warnings} =
-          schedule_discontinuity(
-            state,
-            segment_index,
-            :timing_discontinuity,
-            timeline_reference,
-            timestamp_ns
-          )
-
-        warning = %Action.Warning{
-          severity: :warning,
-          code: :timing_discontinuity_detected,
-          message:
-            "Timing discontinuity detected on track '#{track_id}' at segment #{segment_index}",
-          details: %{
-            track_id: track_id,
-            segment_index: segment_index,
-            timestamp_ns: timestamp_ns,
-            expected_ns: expected,
-            tolerance_ns: state.timing_tolerance_ns
-          }
-        }
-
-        {state, [warning | warnings]}
-      else
-        {state, []}
-      end
-    else
-      {state, []}
-    end
-  end
-
-  defp schedule_discontinuity(state, sync_point, reason, pdt_reference, timestamp_reference_ns \\ nil) do
     if discontinuity_exists?(state.pending_discontinuities, sync_point) do
-      {state, []}
+      {:ok, state}
     else
       passed_tracks =
         state.tracks
@@ -1305,9 +1336,8 @@ defmodule HLS.Packager do
         |> Enum.map(&elem(&1, 0))
 
       if passed_tracks != [] do
-        warning = %Action.Warning{
-          severity: :error,
-          code: :discontinuity_sync_point_passed,
+        error = %Error{
+          code: :discontinuity_point_missed,
           message:
             "Discontinuity at segment #{sync_point} cannot be synchronized across all tracks",
           details: %{
@@ -1317,7 +1347,7 @@ defmodule HLS.Packager do
           }
         }
 
-        {state, [warning]}
+        {:error, error, state}
       else
         entry = %{
           id: make_ref(),
@@ -1327,7 +1357,7 @@ defmodule HLS.Packager do
           reason: reason
         }
 
-        {%{state | pending_discontinuities: state.pending_discontinuities ++ [entry]}, []}
+        {:ok, %{state | pending_discontinuities: state.pending_discontinuities ++ [entry]}}
       end
     end
   end

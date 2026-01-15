@@ -132,11 +132,6 @@ defmodule HLS.PackagerTest do
       TestStorage.delete(storage, full_uri)
     end
 
-    def execute_action(%Packager.Action.Warning{}, _storage, _manifest_uri, _payload) do
-      # Warnings are informational only, no action needed in tests
-      :ok
-    end
-
     @doc """
     Executes a list of actions in order.
     """
@@ -192,7 +187,10 @@ defmodule HLS.PackagerTest do
 
     dts = Keyword.get(opts, :dts)
 
-    Packager.put_segment(state, track_id, duration: duration, pts: pts, dts: dts)
+    case Packager.put_segment(state, track_id, duration: duration, pts: pts, dts: dts) do
+      {:error, error, _state} -> raise error
+      {state, actions} -> {state, actions}
+    end
   end
 
   defp duration_to_ns(duration) do
@@ -852,8 +850,22 @@ defmodule HLS.PackagerTest do
 
       pdt1 = DateTime.add(state.timeline_reference, 10, :second)
       pdt2 = DateTime.add(state.timeline_reference, 20, :second)
-      disc1 = %{id: make_ref(), sync_point: 1, pdt_reference: pdt1, timestamp_reference_ns: 10_000_000_000, reason: :manual}
-      disc2 = %{id: make_ref(), sync_point: 2, pdt_reference: pdt2, timestamp_reference_ns: 20_000_000_000, reason: :manual}
+
+      disc1 = %{
+        id: make_ref(),
+        sync_point: 1,
+        pdt_reference: pdt1,
+        timestamp_reference_ns: 10_000_000_000,
+        reason: :manual
+      }
+
+      disc2 = %{
+        id: make_ref(),
+        sync_point: 2,
+        pdt_reference: pdt2,
+        timestamp_reference_ns: 20_000_000_000,
+        reason: :manual
+      }
 
       state = %{state | pending_discontinuities: [disc1, disc2]}
 
@@ -882,8 +894,8 @@ defmodule HLS.PackagerTest do
           target_segment_duration: 2.0
         )
 
-      # Add segments with specific durations (some exceed target, triggering warnings)
-      segment_durations = [2.0, 1.5, 2.5, 1.0]
+      # Add segments with specific durations within target
+      segment_durations = [2.0, 1.5, 1.8, 1.0]
 
       {state, _} =
         Enum.reduce(segment_durations, {state, []}, fn duration, {s, _} ->
@@ -972,8 +984,8 @@ defmodule HLS.PackagerTest do
     end
   end
 
-  describe "warning system" do
-    test "warns when segment exceeds target duration", %{
+  describe "strict compliance signals" do
+    test "errors when segment exceeds target duration", %{
       manifest_uri: manifest_uri,
       storage: _storage
     } do
@@ -986,23 +998,16 @@ defmodule HLS.PackagerTest do
           target_segment_duration: 6.0
         )
 
-      # Add segment that exceeds target
-      {_state, actions} = put_segment(state, "video", duration: 7.5)
+      result = Packager.put_segment(state, "video", duration: 7.5, pts: 0)
 
-      # Should have upload action and warning
-      upload_action = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
-      warning = Enum.find(actions, &match?(%Packager.Action.Warning{}, &1))
-
-      assert upload_action != nil
-      assert warning != nil
-      assert warning.severity == :error
-      assert warning.code == :segment_exceeds_target_duration
-      assert warning.details.duration == 7.5
-      assert warning.details.target_duration == 6.0
-      assert warning.details.track_id == "video"
+      assert {:error, %Packager.Error{} = error, _state} = result
+      assert error.code == :segment_duration_over_target
+      assert error.details.duration == 7.5
+      assert error.details.target_duration == 6.0
+      assert error.details.track_id == "video"
     end
 
-    test "warns when mandatory tracks are misaligned at sync point", %{
+    test "errors when tracks are misaligned at sync point", %{
       manifest_uri: manifest_uri,
       storage: storage
     } do
@@ -1024,58 +1029,26 @@ defmodule HLS.PackagerTest do
           target_segment_duration: 3.0
         )
 
-      # Add segments with DIFFERENT durations to both tracks to cause drift
-      # Timestamps use round(duration), so we need durations that round differently
-      # video_high: 3.0s, then 3.0s (timestamps: T0, T0+3)
-      # video_low:  1.0s, then 1.0s (timestamps: T0, T0+1)
-      # After second segment, drift = 2 seconds
-
       # Segment 1
-      {state, actions} = put_segment(state, "video_high", duration: 3.0)
+      {state, actions} = put_segment(state, "video_high", duration: 3.0, pts: 0)
       upload = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
       ActionExecutor.execute_action(upload, storage, manifest_uri)
       {state, actions} = Packager.confirm_upload(state, upload.id)
       ActionExecutor.execute_actions(actions, storage, manifest_uri)
 
-      {state, actions} = put_segment(state, "video_low", duration: 1.0)
+      {state, actions} = put_segment(state, "video_low", duration: 1.0, pts: 1_000_000_000)
       upload = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
       ActionExecutor.execute_action(upload, storage, manifest_uri)
       {state, actions} = Packager.confirm_upload(state, upload.id)
       ActionExecutor.execute_actions(actions, storage, manifest_uri)
 
-      {state, actions} = Packager.sync(state, 1)
-      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+      result = Packager.sync(state, 1)
 
-      # Segment 2
-      {state, actions} = put_segment(state, "video_high", duration: 3.0)
-      upload = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
-      ActionExecutor.execute_action(upload, storage, manifest_uri)
-      {state, actions} = Packager.confirm_upload(state, upload.id)
-      ActionExecutor.execute_actions(actions, storage, manifest_uri)
-
-      {state, actions} =
-        put_segment(state, "video_low",
-          duration: 1.0,
-          pts: 1_400_000_000
-        )
-      upload = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
-      ActionExecutor.execute_action(upload, storage, manifest_uri)
-      {state, actions} = Packager.confirm_upload(state, upload.id)
-      ActionExecutor.execute_actions(actions, storage, manifest_uri)
-
-      # Sync should warn about mandatory misalignment at position 2
-      {_state, actions} = Packager.sync(state, 2)
-
-      warnings =
-        Enum.filter(
-          actions,
-          &match?(%Packager.Action.Warning{code: :mandatory_track_timing_mismatch}, &1)
-        )
-
-      assert length(warnings) > 0
+      assert {:error, %Packager.Error{} = error, _state} = result
+      assert error.code == :track_timing_mismatch_at_sync
     end
 
-    test "warns and marks discontinuity on timing discontinuity", %{
+    test "errors when timing drift is detected during put_segment", %{
       manifest_uri: manifest_uri,
       storage: storage
     } do
@@ -1094,18 +1067,17 @@ defmodule HLS.PackagerTest do
       {state, actions} = Packager.confirm_upload(state, upload.id)
       ActionExecutor.execute_actions(actions, storage, manifest_uri)
 
-      {state, actions} = put_segment(state, "video", duration: 2.0, pts: 3_000_000_000)
+      result = Packager.put_segment(state, "video", duration: 2.0, pts: 3_000_000_000)
 
-      warning =
-        Enum.find(actions, &match?(%Packager.Action.Warning{code: :timing_discontinuity_detected}, &1))
-
-      assert warning != nil
-
-      [pending | _] = state.tracks["video"].pending_segments
-      assert pending.segment.discontinuity == true
+      assert {:error, %Packager.Error{} = error, new_state} = result
+      assert error.code == :timing_drift
+      assert new_state.tracks["video"].pending_segments == []
     end
 
-    test "warns about tracks behind sync point", %{manifest_uri: manifest_uri, storage: storage} do
+    test "warns when mandatory tracks are behind at sync point", %{
+      manifest_uri: manifest_uri,
+      storage: storage
+    } do
       {:ok, state} = Packager.new(manifest_uri: manifest_uri)
 
       # Add two tracks
@@ -1141,27 +1113,20 @@ defmodule HLS.PackagerTest do
       {state, actions} = Packager.confirm_upload(state, upload.id)
       ActionExecutor.execute_actions(actions, storage, manifest_uri)
 
-      # Sync to point 3 - audio should be behind
-      {_state, actions} = Packager.sync(state, 3)
+      result = Packager.sync(state, 3)
 
-      warnings =
-        Enum.filter(
-          actions,
-          &match?(%Packager.Action.Warning{code: :mandatory_track_behind_sync_point}, &1)
-        )
-
+      assert {:warning, warnings, _state} = result
       assert length(warnings) == 1
 
       warning = hd(warnings)
-      assert warning.severity == :warning
-      assert warning.code == :mandatory_track_behind_sync_point
+      assert warning.code == :mandatory_track_missing_segment_at_sync
       assert warning.details.track_id == "audio"
       assert warning.details.available_segments == 1
       assert warning.details.sync_point == 3
       assert warning.details.missing_segments == 2
     end
 
-    test "no warnings when segment duration is within target", %{
+    test "accepts segments within target duration", %{
       manifest_uri: manifest_uri,
       storage: _storage
     } do
@@ -1174,14 +1139,68 @@ defmodule HLS.PackagerTest do
           target_segment_duration: 6.0
         )
 
-      # Add segment within target
-      {_state, actions} = put_segment(state, "video", duration: 5.5)
+      {_, actions} = put_segment(state, "video", duration: 5.5)
 
-      warnings = Enum.filter(actions, &match?(%Packager.Action.Warning{}, &1))
-      assert length(warnings) == 0
+      assert Enum.any?(actions, &match?(%Packager.Action.UploadSegment{}, &1))
     end
 
-    test "no warnings when tracks are synchronized for discontinuity", %{
+    test "skip_sync_point marks sync point as skipped for all tracks", %{
+      manifest_uri: manifest_uri,
+      storage: storage
+    } do
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri)
+
+      {state, []} =
+        Packager.add_track(state, "video",
+          stream: %VariantStream{bandwidth: 1_000_000, codecs: []},
+          segment_extension: ".ts",
+          target_segment_duration: 2.0
+        )
+
+      {state, []} =
+        Packager.add_track(state, "audio",
+          stream: %VariantStream{bandwidth: 128_000, codecs: []},
+          segment_extension: ".ts",
+          target_segment_duration: 2.0
+        )
+
+      result = Packager.put_segment(state, "video", duration: 3.5, pts: 0)
+      assert {:error, %Packager.Error{code: :segment_duration_over_target}, state} = result
+
+      {state, []} = Packager.skip_sync_point(state, 1)
+
+      result = Packager.put_segment(state, "audio", duration: 2.0, pts: 0)
+      assert {:warning, %Packager.Error{code: :sync_point_skipped}, state} = result
+
+      result = Packager.put_segment(state, "video", duration: 2.0, pts: 0)
+      assert {:warning, %Packager.Error{code: :sync_point_skipped}, state} = result
+
+      {state, actions} = Packager.put_segment(state, "video", duration: 2.0, pts: 0)
+      upload = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
+      ActionExecutor.execute_action(upload, storage, manifest_uri)
+      {state, actions} = Packager.confirm_upload(state, upload.id)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      {state, actions} = Packager.put_segment(state, "audio", duration: 2.0, pts: 0)
+      upload = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
+      ActionExecutor.execute_action(upload, storage, manifest_uri)
+      {state, actions} = Packager.confirm_upload(state, upload.id)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      {state, actions} = Packager.sync(state, 1)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      video_playlist =
+        load_media_playlist(storage, manifest_uri, state.tracks["video"].media_playlist.uri)
+
+      audio_playlist =
+        load_media_playlist(storage, manifest_uri, state.tracks["audio"].media_playlist.uri)
+
+      assert Enum.at(video_playlist.segments, 0).discontinuity
+      assert Enum.at(audio_playlist.segments, 0).discontinuity
+    end
+
+    test "does not error when tracks are synchronized for discontinuity", %{
       manifest_uri: manifest_uri,
       storage: storage
     } do
@@ -1214,10 +1233,9 @@ defmodule HLS.PackagerTest do
           s
         end)
 
-      # Call discontinue - should NOT warn
-      {_state, warnings} = Packager.discontinue(state)
+      result = Packager.discontinue(state)
 
-      assert length(warnings) == 0
+      assert match?({_, []}, result)
     end
   end
 
@@ -1516,6 +1534,7 @@ defmodule HLS.PackagerTest do
       discontinuity_segment = Enum.find(playlist.segments, & &1.discontinuity)
 
       assert discontinuity_segment != nil
+
       assert discontinuity_segment.program_date_time != nil,
              "RFC 8216: Discontinuity segments SHOULD have EXT-X-PROGRAM-DATE-TIME"
 
@@ -1853,6 +1872,7 @@ defmodule HLS.PackagerTest do
       ActionExecutor.execute_actions(actions, storage, manifest_uri)
 
       master_content = load_master_content(storage, manifest_uri)
+
       media_content =
         load_media_content(storage, manifest_uri, state.tracks["video"].media_playlist.uri)
 
@@ -1900,6 +1920,7 @@ defmodule HLS.PackagerTest do
       ActionExecutor.execute_actions(actions, storage, manifest_uri)
 
       master_lines = load_master_content(storage, manifest_uri) |> playlist_lines()
+
       media_lines =
         load_media_content(storage, manifest_uri, state.tracks["video"].media_playlist.uri)
         |> playlist_lines()
@@ -1970,7 +1991,9 @@ defmodule HLS.PackagerTest do
         load_media_content(storage, manifest_uri, state.tracks["video"].media_playlist.uri)
         |> playlist_lines()
 
-      segment_lines = Enum.filter(media_lines, fn line -> line != "" and not String.starts_with?(line, "#") end)
+      segment_lines =
+        Enum.filter(media_lines, fn line -> line != "" and not String.starts_with?(line, "#") end)
+
       inf_lines = Enum.filter(media_lines, &String.starts_with?(&1, "#EXTINF:"))
 
       assert length(segment_lines) == length(inf_lines),
@@ -1998,8 +2021,11 @@ defmodule HLS.PackagerTest do
         load_media_content(storage, manifest_uri, state.tracks["video"].media_playlist.uri)
         |> playlist_lines()
 
-      media_seq_idx = Enum.find_index(media_lines, &String.starts_with?(&1, "#EXT-X-MEDIA-SEQUENCE:"))
-      first_segment_idx = Enum.find_index(media_lines, fn line -> not String.starts_with?(line, "#") end)
+      media_seq_idx =
+        Enum.find_index(media_lines, &String.starts_with?(&1, "#EXT-X-MEDIA-SEQUENCE:"))
+
+      first_segment_idx =
+        Enum.find_index(media_lines, fn line -> not String.starts_with?(line, "#") end)
 
       assert media_seq_idx != nil
       assert first_segment_idx != nil
@@ -2010,7 +2036,7 @@ defmodule HLS.PackagerTest do
       manifest_uri: manifest_uri,
       storage: storage
     } do
-      {:ok, state} = Packager.new(manifest_uri: manifest_uri)
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri, max_segments: 5)
 
       {state, []} =
         Packager.add_track(state, "video",
@@ -2025,7 +2051,12 @@ defmodule HLS.PackagerTest do
       {state, actions} = Packager.confirm_upload(state, upload.id)
       ActionExecutor.execute_actions(actions, storage, manifest_uri)
 
-      {state, actions} = put_segment(state, "video", duration: 2.0, pts: 5_000_000_000)
+      {state, actions} = Packager.sync(state, 1)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      {state, []} = Packager.discontinue(state)
+
+      {state, actions} = put_segment(state, "video", duration: 2.0, pts: 2_000_000_000)
       upload = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
       ActionExecutor.execute_action(upload, storage, manifest_uri)
       {state, actions} = Packager.confirm_upload(state, upload.id)
@@ -2043,7 +2074,8 @@ defmodule HLS.PackagerTest do
 
       disc_idx = Enum.find_index(media_lines, &(&1 == "#EXT-X-DISCONTINUITY"))
 
-      first_segment_idx = Enum.find_index(media_lines, fn line -> not String.starts_with?(line, "#") end)
+      first_segment_idx =
+        Enum.find_index(media_lines, fn line -> not String.starts_with?(line, "#") end)
 
       assert disc_seq_idx != nil
       assert disc_idx != nil
@@ -2082,7 +2114,9 @@ defmodule HLS.PackagerTest do
         |> playlist_lines()
 
       map_idx = Enum.find_index(media_lines, &String.starts_with?(&1, "#EXT-X-MAP:"))
-      first_segment_idx = Enum.find_index(media_lines, fn line -> not String.starts_with?(line, "#") end)
+
+      first_segment_idx =
+        Enum.find_index(media_lines, fn line -> not String.starts_with?(line, "#") end)
 
       assert map_idx != nil
       assert first_segment_idx != nil
@@ -2181,32 +2215,30 @@ defmodule HLS.PackagerTest do
           target_segment_duration: 2.0
         )
 
-      state = add_segments(state, storage, manifest_uri, "video_high", 1, 2.0)
-      state = add_segments(state, storage, manifest_uri, "video_low", 1, 2.0)
-
-      {state, actions} = put_segment(state, "video_high", duration: 2.0, pts: 4_000_000_000)
+      {state, actions} = Packager.put_segment(state, "video_high", duration: 2.0, pts: 0)
       upload = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
       ActionExecutor.execute_action(upload, storage, manifest_uri)
       {state, actions} = Packager.confirm_upload(state, upload.id)
       ActionExecutor.execute_actions(actions, storage, manifest_uri)
 
-      {state, actions} = put_segment(state, "video_low", duration: 2.0, pts: 2_000_000_000)
+      {state, actions} =
+        Packager.put_segment(state, "video_low", duration: 2.0, pts: 1_000_000_000)
+
       upload = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
       ActionExecutor.execute_action(upload, storage, manifest_uri)
       {state, actions} = Packager.confirm_upload(state, upload.id)
       ActionExecutor.execute_actions(actions, storage, manifest_uri)
 
-      {_state, actions} = Packager.sync(state, 2)
+      result = Packager.sync(state, 1)
 
-      refute Enum.any?(actions, &match?(%Packager.Action.WritePlaylist{}, &1)),
-             "Sync must not write playlists when mandatory tracks are misaligned"
+      assert {:error, %Packager.Error{code: :track_timing_mismatch_at_sync}, _state} = result
     end
 
     test "discontinuity tags align across variant playlists", %{
       manifest_uri: manifest_uri,
       storage: storage
     } do
-      {:ok, state} = Packager.new(manifest_uri: manifest_uri)
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri, max_segments: 5)
 
       {state, []} =
         Packager.add_track(state, "video",
@@ -2225,13 +2257,18 @@ defmodule HLS.PackagerTest do
       state = add_segments(state, storage, manifest_uri, "video", 1, 2.0)
       state = add_segments(state, storage, manifest_uri, "audio", 1, 2.0)
 
-      {state, actions} = put_segment(state, "video", duration: 2.0, pts: 5_000_000_000)
+      {state, actions} = Packager.sync(state, 1)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      {state, []} = Packager.discontinue(state)
+
+      {state, actions} = put_segment(state, "video", duration: 2.0, pts: 2_000_000_000)
       upload = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
       ActionExecutor.execute_action(upload, storage, manifest_uri)
       {state, actions} = Packager.confirm_upload(state, upload.id)
       ActionExecutor.execute_actions(actions, storage, manifest_uri)
 
-      {state, actions} = put_segment(state, "audio", duration: 2.0, pts: 5_000_000_000)
+      {state, actions} = put_segment(state, "audio", duration: 2.0, pts: 2_000_000_000)
       upload = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
       ActionExecutor.execute_action(upload, storage, manifest_uri)
       {state, actions} = Packager.confirm_upload(state, upload.id)
@@ -2248,8 +2285,11 @@ defmodule HLS.PackagerTest do
         load_media_content(storage, manifest_uri, state.tracks["audio"].media_playlist.uri)
         |> playlist_lines()
 
-      video_disc_idx = Enum.find_index(video_lines, &String.starts_with?(&1, "#EXT-X-DISCONTINUITY"))
-      audio_disc_idx = Enum.find_index(audio_lines, &String.starts_with?(&1, "#EXT-X-DISCONTINUITY"))
+      video_disc_idx =
+        Enum.find_index(video_lines, &String.starts_with?(&1, "#EXT-X-DISCONTINUITY"))
+
+      audio_disc_idx =
+        Enum.find_index(audio_lines, &String.starts_with?(&1, "#EXT-X-DISCONTINUITY"))
 
       assert video_disc_idx != nil
       assert audio_disc_idx != nil

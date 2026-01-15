@@ -117,6 +117,31 @@ Key options for `HLS.Packager.new/1`:
 
 For resuming from existing playlists, use `HLS.Packager.resume/1` with loaded playlist data.
 
+## Packager Edge Cases (Production)
+
+`HLS.Packager` enforces RFC compliance and returns errors or stall warnings
+instead of emitting non-compliant playlists:
+
+- Segment duration overruns: returns `{:error, %HLS.Packager.Error{code: :segment_duration_over_target}, state}`
+  when a segment exceeds the configured target duration.
+- Timing drift between segments: returns `{:error, %HLS.Packager.Error{code: :timing_drift}, state}`
+  when timestamps drift beyond `timing_tolerance_ms`. Callers should ignore the segment and
+  call `skip_sync_point/2` before continuing.
+- Grouped recovery: `skip_sync_point/2` marks the sync point as skipped for all tracks and
+  schedules a discontinuity. The next `put_segment/3` call for each track at that index
+  returns `{:warning, %HLS.Packager.Error{code: :sync_point_skipped}, state}` so callers
+  can drop that segment across the group.
+- Discontinuity synchronization: `discontinue/1` returns
+  `{:error, %HLS.Packager.Error{code: :discontinuity_point_missed}, state}` if any track
+  already passed the sync point.
+- Sync readiness: `sync/2` returns `{:warning, [%HLS.Packager.Error{code: :mandatory_track_missing_segment_at_sync}], state}`
+  when mandatory tracks are missing segments (stall without advancing playlists).
+- Track timing alignment: `sync/2` returns `{:error, %HLS.Packager.Error{code: :track_timing_mismatch_at_sync}, state}`
+  if timestamps are misaligned at the sync point.
+- Sliding window cleanup: when `max_segments` is set, it trims old segments, bumps
+  `EXT-X-MEDIA-SEQUENCE` and `EXT-X-DISCONTINUITY-SEQUENCE`, and deletes orphaned
+  init sections to keep playlists consistent.
+
 ## Copyright and License
 
 Copyright 2024, [KIM Keep In Mind GmbH](https://www.keepinmind.info/)
