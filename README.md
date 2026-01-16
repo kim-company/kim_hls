@@ -11,7 +11,7 @@ Add `kim_hls` to your dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:kim_hls, "~> 2.5"}
+    {:kim_hls, "~> 3.0"}
   ]
 end
 ```
@@ -28,6 +28,7 @@ This release is a major architectural update focused on a fully functional packa
 - `#EXT-X-MEDIA` validation tightened (required attributes, CLOSED-CAPTIONS URI rules).
 - Master and media playlist tests now assert RFC tag ordering and required attributes.
 - Media target duration remains fixed to configured value (no per-playlist drift).
+- Tracker has been removed
 
 ## Architecture
 
