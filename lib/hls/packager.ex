@@ -1264,23 +1264,30 @@ defmodule HLS.Packager do
     if warnings != [] do
       {:warning, warnings}
     else
-      case check_mandatory_alignment(mandatory_tracks, sync_point, state) do
+      case check_track_alignment(state.tracks, mandatory_tracks, sync_point, state) do
         :ok -> :ready
         {:error, error} -> {:error, error}
       end
     end
   end
 
-  defp check_mandatory_alignment([], _sync_point, _state), do: :ok
+  defp check_track_alignment(tracks, mandatory_tracks, sync_point, state) do
+    mandatory_ids = MapSet.new(Enum.map(mandatory_tracks, &elem(&1, 0)))
 
-  defp check_mandatory_alignment(tracks, sync_point, state) do
     {timestamps, missing} =
       Enum.reduce(tracks, {[], []}, fn {id, track}, {acc, missing_acc} ->
         segment = segment_at_sync_point(track, sync_point)
 
-        case segment_timestamp_ns(segment) do
-          nil -> {acc, [id | missing_acc]}
-          ts -> {[{id, ts} | acc], missing_acc}
+        cond do
+          is_nil(segment) ->
+            {acc, missing_acc}
+
+          segment_timestamp_ns(segment) == nil ->
+            {acc, [id | missing_acc]}
+
+          true ->
+            ts = segment_timestamp_ns(segment)
+            {[{id, ts} | acc], missing_acc}
         end
       end)
 
@@ -1303,6 +1310,10 @@ defmodule HLS.Packager do
             end
           end)
 
+        missing_mandatory =
+          missing
+          |> Enum.filter(&MapSet.member?(mandatory_ids, &1))
+
         if mismatches == [] and missing == [] do
           :ok
         else
@@ -1316,6 +1327,7 @@ defmodule HLS.Packager do
                reference_timestamp_ns: reference_ts,
                mismatched_tracks: mismatches,
                missing_tracks: missing,
+               missing_mandatory_tracks: missing_mandatory,
                tolerance_ns: state.timing_tolerance_ns
              }
            }}
