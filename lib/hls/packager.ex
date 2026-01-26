@@ -530,8 +530,8 @@ defmodule HLS.Packager do
             {:warning, warning, new_state}
 
           :ok ->
-            # RFC 8216: Segment duration MUST NOT exceed target duration
-            if duration > track.media_playlist.target_segment_duration do
+            # RFC 8216: EXTINF duration rounded to nearest integer MUST be <= target duration
+            if round(duration) > track.media_playlist.target_segment_duration do
               error = %Error{
                 code: :segment_duration_over_target,
                 message:
