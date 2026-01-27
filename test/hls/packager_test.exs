@@ -267,7 +267,7 @@ defmodule HLS.PackagerTest do
       assert master_content =~ "BANDWIDTH=2000000"
     end
 
-    test "master playlist includes EXT-X-VERSION and EXT-X-INDEPENDENT-SEGMENTS", %{
+    test "master playlist includes EXT-X-VERSION", %{
       manifest_uri: manifest_uri,
       storage: storage
     } do
@@ -289,7 +289,6 @@ defmodule HLS.PackagerTest do
 
       {:ok, master_content} = TestStorage.get(storage, manifest_uri)
       assert master_content =~ "#EXT-X-VERSION:"
-      assert master_content =~ "#EXT-X-INDEPENDENT-SEGMENTS"
     end
 
     test "master playlist includes alternative renditions", %{

@@ -1080,7 +1080,7 @@ defmodule HLS.Packager do
     %Master{
       version: 4,
       uri: state.manifest_uri,
-      independent_segments: true,
+      independent_segments: false,
       streams: Enum.map(variant_tracks, & &1.stream),
       alternative_renditions: Enum.map(alternative_tracks, & &1.stream)
     }
