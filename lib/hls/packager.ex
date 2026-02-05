@@ -738,24 +738,169 @@ defmodule HLS.Packager do
   """
   @spec skip_sync_point(t(), pos_integer()) :: {t(), []} | {:error, Error.t(), t()}
   def skip_sync_point(state, sync_point) when sync_point > 0 do
-    state =
-      Map.update(
-        state,
-        :skipped_sync_points,
-        %{sync_point => MapSet.new(Map.keys(state.tracks))},
-        fn skips ->
-          Map.put_new(skips, sync_point, MapSet.new(Map.keys(state.tracks)))
-        end
-      )
+    passed_tracks =
+      state.tracks
+      |> Enum.filter(fn {_id, track} -> length(track.media_playlist.segments) >= sync_point end)
+      |> Enum.map(&elem(&1, 0))
 
-    timeline_reference = DateTime.utc_now(:millisecond)
+    if passed_tracks != [] do
+      error = %Error{
+        code: :discontinuity_point_missed,
+        message:
+          "Discontinuity at segment #{sync_point} cannot be synchronized across all tracks",
+        details: %{
+          sync_point: sync_point,
+          reason: :skip,
+          tracks_ahead: passed_tracks
+        }
+      }
 
-    case schedule_discontinuity(state, sync_point, :skip, timeline_reference) do
-      {:ok, new_state} ->
-        {%{new_state | timeline_reference: timeline_reference}, []}
+      {:error, error, state}
+    else
+      skip_existing? =
+        Enum.all?(state.tracks, fn {_id, track} -> track.segment_count >= sync_point end)
 
-      {:error, error, _state} ->
-        {:error, error, state}
+      state =
+        state
+        |> then(fn current_state ->
+          if skip_existing?, do: current_state, else: mark_skipped_sync_point(current_state, sync_point)
+        end)
+        |> drop_pending_segments_at_sync_point(sync_point)
+
+      discontinuity_sync_point = if skip_existing?, do: sync_point + 1, else: sync_point
+      apply_sync_point = if skip_existing?, do: sync_point, else: discontinuity_sync_point
+      timeline_reference = DateTime.utc_now(:millisecond)
+
+      case schedule_discontinuity(state, discontinuity_sync_point, :skip, timeline_reference) do
+        {:ok, new_state} ->
+          new_state =
+            new_state
+            |> Map.put(:timeline_reference, timeline_reference)
+            |> maybe_apply_pending_discontinuity(discontinuity_sync_point, apply_sync_point)
+
+          {new_state, []}
+
+        {:error, error, _state} ->
+          {:error, error, state}
+      end
+    end
+  end
+
+  defp mark_skipped_sync_point(state, sync_point) do
+    Map.update(
+      state,
+      :skipped_sync_points,
+      %{sync_point => MapSet.new(Map.keys(state.tracks))},
+      fn skips ->
+        Map.put_new(skips, sync_point, MapSet.new(Map.keys(state.tracks)))
+      end
+    )
+  end
+
+  defp drop_pending_segments_at_sync_point(state, sync_point) do
+    update_in(state.tracks, fn tracks ->
+      tracks
+      |> Enum.map(fn {id, track} ->
+        {id, drop_track_segment_at_sync_point(track, sync_point)}
+      end)
+      |> Map.new()
+    end)
+  end
+
+  defp drop_track_segment_at_sync_point(track, sync_point) do
+    media_count = length(track.media_playlist.segments)
+    pending_playlist_count = length(track.pending_playlist.segments)
+    relative_index = sync_point - media_count - 1
+
+    cond do
+      relative_index < 0 ->
+        track
+
+      relative_index < pending_playlist_count ->
+        {_removed, remaining} = List.pop_at(track.pending_playlist.segments, relative_index)
+        %{track | pending_playlist: %{track.pending_playlist | segments: remaining}}
+
+      relative_index < pending_playlist_count + length(track.pending_segments) ->
+        pending_idx = relative_index - pending_playlist_count
+        {_removed, remaining} = List.pop_at(track.pending_segments, pending_idx)
+        %{track | pending_segments: remaining}
+
+      true ->
+        track
+    end
+  end
+
+  defp maybe_apply_pending_discontinuity(state, discontinuity_sync_point, apply_sync_point) do
+    case find_discontinuity(state.pending_discontinuities, discontinuity_sync_point) do
+      nil ->
+        state
+
+      discontinuity ->
+        updated_tracks =
+          state.tracks
+          |> Enum.map(fn {id, track} ->
+            {id, apply_discontinuity_to_track_segment(track, discontinuity, apply_sync_point)}
+          end)
+          |> Map.new()
+
+        %{state | tracks: updated_tracks}
+        |> maybe_pop_discontinuities()
+    end
+  end
+
+  defp apply_discontinuity_to_track_segment(track, discontinuity, apply_sync_point) do
+    media_count = length(track.media_playlist.segments)
+    pending_playlist_count = length(track.pending_playlist.segments)
+    relative_index = apply_sync_point - media_count - 1
+
+    cond do
+      relative_index < 0 ->
+        track
+
+      relative_index < pending_playlist_count ->
+        {segment, remaining} = List.pop_at(track.pending_playlist.segments, relative_index)
+        timestamp_ns = segment_timestamp_ns(segment)
+
+        updated_segment = %{
+          segment
+          | discontinuity: true,
+            program_date_time: discontinuity.pdt_reference
+        }
+
+        updated_segments = List.insert_at(remaining, relative_index, updated_segment)
+
+        %{
+          track
+          | pending_playlist: %{track.pending_playlist | segments: updated_segments},
+            base_pdt: discontinuity.pdt_reference,
+            base_timestamp_ns: timestamp_ns,
+            applied_discontinuities: MapSet.put(track.applied_discontinuities, discontinuity.id)
+        }
+
+      relative_index < pending_playlist_count + length(track.pending_segments) ->
+        pending_idx = relative_index - pending_playlist_count
+        {pending_segment, remaining} = List.pop_at(track.pending_segments, pending_idx)
+        timestamp_ns = segment_timestamp_ns(pending_segment.segment)
+
+        updated_segment = %{
+          pending_segment.segment
+          | discontinuity: true,
+            program_date_time: discontinuity.pdt_reference
+        }
+
+        updated_pending_segment = %{pending_segment | segment: updated_segment}
+        updated_pending_segments = List.insert_at(remaining, pending_idx, updated_pending_segment)
+
+        %{
+          track
+          | pending_segments: updated_pending_segments,
+            base_pdt: discontinuity.pdt_reference,
+            base_timestamp_ns: timestamp_ns,
+            applied_discontinuities: MapSet.put(track.applied_discontinuities, discontinuity.id)
+        }
+
+      true ->
+        track
     end
   end
 
@@ -1398,7 +1543,7 @@ defmodule HLS.Packager do
     else
       passed_tracks =
         state.tracks
-        |> Enum.filter(fn {_id, track} -> track.segment_count >= sync_point end)
+        |> Enum.filter(fn {_id, track} -> length(track.media_playlist.segments) >= sync_point end)
         |> Enum.map(&elem(&1, 0))
 
       if passed_tracks != [] do

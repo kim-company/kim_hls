@@ -1048,6 +1048,70 @@ defmodule HLS.PackagerTest do
       assert error.code == :track_timing_mismatch_at_sync
     end
 
+    test "skip_sync_point advances after timing mismatch with discontinuity", %{
+      manifest_uri: manifest_uri,
+      storage: storage
+    } do
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri, max_segments: 5)
+
+      {state, []} =
+        Packager.add_track(state, "video",
+          stream: %VariantStream{bandwidth: 2_000_000, codecs: []},
+          segment_extension: ".ts",
+          target_segment_duration: 2.0
+        )
+
+      {state, []} =
+        Packager.add_track(state, "audio",
+          stream: %VariantStream{bandwidth: 128_000, codecs: []},
+          segment_extension: ".ts",
+          target_segment_duration: 2.0
+        )
+
+      {state, actions} = put_segment(state, "video", duration: 2.0, pts: 0)
+      upload = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
+      ActionExecutor.execute_action(upload, storage, manifest_uri)
+      {state, actions} = Packager.confirm_upload(state, upload.id)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      {state, actions} = put_segment(state, "audio", duration: 1.0, pts: 1_000_000_000)
+      upload = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
+      ActionExecutor.execute_action(upload, storage, manifest_uri)
+      {state, actions} = Packager.confirm_upload(state, upload.id)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      {state, actions} = put_segment(state, "video", duration: 2.0, pts: 2_000_000_000)
+      upload = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
+      ActionExecutor.execute_action(upload, storage, manifest_uri)
+      {state, actions} = Packager.confirm_upload(state, upload.id)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      {state, actions} = put_segment(state, "audio", duration: 1.0, pts: 2_000_000_000)
+      upload = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
+      ActionExecutor.execute_action(upload, storage, manifest_uri)
+      {state, actions} = Packager.confirm_upload(state, upload.id)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      assert {:error, %Packager.Error{code: :track_timing_mismatch_at_sync}, state} =
+               Packager.sync(state, 1)
+
+      assert {state, []} = Packager.skip_sync_point(state, 1)
+
+      {state, actions} = Packager.sync(state, 1)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      video_playlist =
+        load_media_playlist(storage, manifest_uri, state.tracks["video"].media_playlist.uri)
+
+      audio_playlist =
+        load_media_playlist(storage, manifest_uri, state.tracks["audio"].media_playlist.uri)
+
+      assert length(video_playlist.segments) == 1
+      assert length(audio_playlist.segments) == 1
+      assert Enum.at(video_playlist.segments, 0).discontinuity
+      assert Enum.at(audio_playlist.segments, 0).discontinuity
+    end
+
     test "errors when timing drift is detected during put_segment", %{
       manifest_uri: manifest_uri,
       storage: storage
@@ -1202,7 +1266,7 @@ defmodule HLS.PackagerTest do
 
     test "skip_sync_point errors when sync point already passed", %{
       manifest_uri: manifest_uri,
-      storage: _storage
+      storage: storage
     } do
       {:ok, state} = Packager.new(manifest_uri: manifest_uri)
 
@@ -1215,6 +1279,13 @@ defmodule HLS.PackagerTest do
 
       {state, [action]} = Packager.put_segment(state, "video", duration: 2.0, pts: 0)
       assert match?(%Packager.Action.UploadSegment{}, action)
+
+      ActionExecutor.execute_action(action, storage, manifest_uri)
+      {state, actions} = Packager.confirm_upload(state, action.id)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      {state, actions} = Packager.sync(state, 1)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
 
       result = Packager.skip_sync_point(state, 1)
 
