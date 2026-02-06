@@ -1115,12 +1115,21 @@ defmodule HLS.Packager do
       to_remove = segment_count - max_segments
       {removed, remaining} = Enum.split(playlist.segments, to_remove)
 
+      # RFC 8216 §6.2.2: "The server SHOULD NOT remove a Media Segment …
+      # if that would produce a Playlist whose duration is less than three
+      # times the target duration."
+      min_duration = 3 * playlist.target_segment_duration
+
+      {removed, remaining} =
+        give_back_for_min_duration(removed, remaining, min_duration)
+
+      actually_removed = length(removed)
       removed_discontinuities = Enum.count(removed, & &1.discontinuity)
 
       updated = %{
         playlist
         | segments: remaining,
-          media_sequence_number: playlist.media_sequence_number + to_remove,
+          media_sequence_number: playlist.media_sequence_number + actually_removed,
           discontinuity_sequence: playlist.discontinuity_sequence + removed_discontinuities
       }
 
@@ -1139,6 +1148,28 @@ defmodule HLS.Packager do
       {updated, removed, updated_track}
     else
       {playlist, [], track}
+    end
+  end
+
+  # Give segments back from `removed` to `remaining` (one at a time, from the
+  # tail of removed to the head of remaining) until remaining's total duration
+  # ≥ min_duration, or there are no more segments to give back.
+  defp give_back_for_min_duration([], remaining, _min_duration), do: {[], remaining}
+
+  defp give_back_for_min_duration(removed, remaining, min_duration) do
+    remaining_duration = Enum.reduce(remaining, 0.0, &(&1.duration + &2))
+
+    if remaining_duration >= min_duration do
+      {removed, remaining}
+    else
+      # Move the last removed segment (closest to the window) back
+      {still_removed, [given_back]} = Enum.split(removed, -1)
+
+      give_back_for_min_duration(
+        still_removed,
+        [given_back | remaining],
+        min_duration
+      )
     end
   end
 
@@ -1222,8 +1253,15 @@ defmodule HLS.Packager do
         %{track | stream: %{track.stream | codecs: all_codecs}}
       end)
 
+    # RFC 8216 §4.3.1.2: Use the highest version required by any playlist.
+    max_version =
+      state.tracks
+      |> Map.values()
+      |> Enum.map(& &1.media_playlist.version)
+      |> Enum.max(fn -> 7 end)
+
     %Master{
-      version: 4,
+      version: max_version,
       uri: state.manifest_uri,
       independent_segments: false,
       streams: Enum.map(variant_tracks, & &1.stream),

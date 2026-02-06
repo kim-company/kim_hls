@@ -2,7 +2,8 @@ defmodule HLS.Playlist.Tag.Byterange do
   use HLS.Playlist.Tag, id: :ext_x_byterange
 
   @impl true
-  def unmarshal(data), do: capture_value!(data, ~s/\\d+@\\d+/, &parse_byterange/1)
+  # RFC 8216 §4.3.2.2: n[@o] — offset is optional.
+  def unmarshal(data), do: capture_value!(data, ~s/\\d+(?:@\\d+)?/, &parse_byterange/1)
 
   def parse_byterange(value) do
     case String.split(value, "@") do

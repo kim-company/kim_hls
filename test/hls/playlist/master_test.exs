@@ -452,4 +452,188 @@ defmodule HLS.Playlist.MasterTest do
       assert 4 = length(master.alternative_renditions)
     end
   end
+
+  describe "AUDIO/VIDEO URI optional in EXT-X-MEDIA" do
+    test "marshal succeeds for AUDIO without URI (muxed rendition)" do
+      alt = %HLS.AlternativeRendition{
+        type: :audio,
+        name: "English",
+        group_id: "audio",
+        language: "en"
+      }
+
+      master = %Playlist.Master{
+        version: 7,
+        streams: [
+          %HLS.VariantStream{
+            bandwidth: 2_000_000,
+            codecs: ["avc1.64001f", "mp4a.40.2"],
+            audio: "audio",
+            uri: URI.new!("video.m3u8")
+          }
+        ],
+        alternative_renditions: [alt]
+      }
+
+      marshaled = Playlist.marshal(master)
+      assert marshaled =~ "TYPE=AUDIO"
+      refute marshaled =~ "URI="
+    end
+
+    test "marshal succeeds for VIDEO without URI" do
+      alt = %HLS.AlternativeRendition{
+        type: :video,
+        name: "Main Angle",
+        group_id: "video"
+      }
+
+      master = %Playlist.Master{
+        version: 7,
+        streams: [
+          %HLS.VariantStream{
+            bandwidth: 2_000_000,
+            codecs: ["avc1.64001f"],
+            video: "video",
+            uri: URI.new!("video.m3u8")
+          }
+        ],
+        alternative_renditions: [alt]
+      }
+
+      marshaled = Playlist.marshal(master)
+      assert marshaled =~ "TYPE=VIDEO"
+      refute marshaled =~ "URI="
+    end
+
+    test "round-trip muxed AUDIO rendition (no URI)" do
+      content = """
+      #EXTM3U
+      #EXT-X-VERSION:7
+      #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="English",DEFAULT=YES,LANGUAGE="en"
+      #EXT-X-STREAM-INF:BANDWIDTH=2000000,CODECS="avc1.64001f,mp4a.40.2",AUDIO="audio"
+      video.m3u8
+      """
+
+      master = Playlist.unmarshal(content, %Playlist.Master{})
+      [alt] = master.alternative_renditions
+      assert alt.type == :audio
+      assert alt.uri == nil
+
+      marshaled = Playlist.marshal(master)
+      re_parsed = Playlist.unmarshal(marshaled, %Playlist.Master{})
+      [re_alt] = re_parsed.alternative_renditions
+      assert re_alt.uri == nil
+      assert re_alt.name == "English"
+    end
+
+    test "AUDIO with URI still works" do
+      alt = %HLS.AlternativeRendition{
+        type: :audio,
+        name: "English",
+        group_id: "audio",
+        uri: URI.new!("audio_en.m3u8")
+      }
+
+      master = %Playlist.Master{
+        version: 7,
+        streams: [
+          %HLS.VariantStream{
+            bandwidth: 2_000_000,
+            codecs: ["avc1.64001f"],
+            audio: "audio",
+            uri: URI.new!("video.m3u8")
+          }
+        ],
+        alternative_renditions: [alt]
+      }
+
+      marshaled = Playlist.marshal(master)
+      assert marshaled =~ ~s(URI="audio_en.m3u8")
+    end
+  end
+
+  describe "AlternativeRendition.type_t uses :closed_captions" do
+    test "CLOSED-CAPTIONS type parses to :closed_captions atom" do
+      content = """
+      #EXTM3U
+      #EXT-X-VERSION:7
+      #EXT-X-MEDIA:TYPE=CLOSED-CAPTIONS,GROUP-ID="cc",NAME="CC1",INSTREAM-ID="CC1"
+      #EXT-X-STREAM-INF:BANDWIDTH=500000,CODECS="avc1.42e00a",CLOSED-CAPTIONS="cc"
+      v.m3u8
+      """
+
+      master = Playlist.unmarshal(content, %Playlist.Master{})
+      [alt] = master.alternative_renditions
+      assert alt.type == :closed_captions
+    end
+
+    test "all four rendition types use their proper atoms" do
+      alias HLS.Playlist.Tag
+
+      for {raw, expected} <- [
+            {"AUDIO", :audio},
+            {"VIDEO", :video},
+            {"SUBTITLES", :subtitles},
+            {"CLOSED-CAPTIONS", :closed_captions}
+          ] do
+        assert Tag.AlternativeRendition.rendition_type_to_atom(raw) == expected
+      end
+    end
+  end
+
+  describe "independent_segments is a proper boolean" do
+    test "true when tag is present" do
+      content = """
+      #EXTM3U
+      #EXT-X-VERSION:7
+      #EXT-X-INDEPENDENT-SEGMENTS
+      #EXT-X-STREAM-INF:BANDWIDTH=500000,CODECS="avc1.42e00a"
+      v.m3u8
+      """
+
+      master = Playlist.unmarshal(content, %Playlist.Master{})
+      assert master.independent_segments === true
+      assert is_boolean(master.independent_segments)
+    end
+
+    test "false when tag is absent" do
+      content = """
+      #EXTM3U
+      #EXT-X-VERSION:7
+      #EXT-X-STREAM-INF:BANDWIDTH=500000,CODECS="avc1.42e00a"
+      v.m3u8
+      """
+
+      master = Playlist.unmarshal(content, %Playlist.Master{})
+      assert master.independent_segments === false
+      assert is_boolean(master.independent_segments)
+    end
+
+    test "round-trips correctly" do
+      for has_tag <- [true, false] do
+        content =
+          if has_tag do
+            """
+            #EXTM3U
+            #EXT-X-VERSION:7
+            #EXT-X-INDEPENDENT-SEGMENTS
+            #EXT-X-STREAM-INF:BANDWIDTH=500000,CODECS="avc1.42e00a"
+            v.m3u8
+            """
+          else
+            """
+            #EXTM3U
+            #EXT-X-VERSION:7
+            #EXT-X-STREAM-INF:BANDWIDTH=500000,CODECS="avc1.42e00a"
+            v.m3u8
+            """
+          end
+
+        master = Playlist.unmarshal(content, %Playlist.Master{})
+        marshaled = Playlist.marshal(master)
+        re_parsed = Playlist.unmarshal(marshaled, %Playlist.Master{})
+        assert re_parsed.independent_segments === has_tag
+      end
+    end
+  end
 end

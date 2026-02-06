@@ -4,9 +4,9 @@ defmodule HLS.Playlist.Media do
 
   @type t :: %__MODULE__{
           version: pos_integer(),
-          # specifies the maximum length of segments.
+          # specifies the maximum length of segments as a decimal-integer.
           # https://www.rfc-editor.org/rfc/rfc8216#section-4.3.3.1
-          target_segment_duration: pos_integer(),
+          target_segment_duration: pos_integer() | float(),
           # the relative sequence number this playlist starts from. Used when
           # not all segments are listed in the playlist.
           # https://www.rfc-editor.org/rfc/# rfc8216#section-4.3.3.2
@@ -32,10 +32,17 @@ defmodule HLS.Playlist.Media do
     segments: []
   ]
 
-  @spec new(URI.t(), pos_integer()) :: t()
+  @spec new(URI.t(), number()) :: t()
   def new(uri, target_segment_duration) do
-    %__MODULE__{uri: uri, target_segment_duration: target_segment_duration}
+    %__MODULE__{uri: uri, target_segment_duration: ceil_target_duration(target_segment_duration)}
   end
+
+  @doc false
+  # RFC 8216 §4.3.3.1: EXT-X-TARGETDURATION is a decimal-integer.
+  # Coerce floats to the smallest integer >= the value so the constraint
+  # "rounded EXTINF <= target" is never violated by truncation.
+  def ceil_target_duration(d) when is_integer(d) and d > 0, do: d
+  def ceil_target_duration(d) when is_float(d) and d > 0, do: ceil(d)
 
   @doc """
   Builds segment absolute uri.
@@ -76,6 +83,7 @@ defimpl HLS.Playlist.Marshaler, for: HLS.Playlist.Media do
 
     segments =
       segments
+      # Deduplicate init sections: only emit when changed
       |> Stream.transform(nil, fn segment, last ->
         if segment.init_section == last do
           {[%{segment | init_section: nil}], last}
@@ -83,9 +91,19 @@ defimpl HLS.Playlist.Marshaler, for: HLS.Playlist.Media do
           {[segment], segment.init_section}
         end
       end)
+      # Deduplicate keys: only emit when changed
+      |> Stream.transform(nil, fn segment, last_key ->
+        if segment.key == last_key do
+          {[%{segment | key: nil}], last_key}
+        else
+          {[segment], segment.key}
+        end
+      end)
       |> Stream.map(fn %Segment{duration: duration, uri: uri} = segment ->
         [
           segment.discontinuity && Tag.marshal(Tag.Discontinuity),
+          segment.key &&
+            Tag.marshal(Tag.Key, Tag.Key.marshal_attributes(segment.key)),
           segment.init_section &&
             Tag.marshal(Tag.Map, Tag.Map.marshal_uri_and_byterange(segment.init_section)),
           segment.program_date_time &&
@@ -160,6 +178,7 @@ defimpl HLS.Playlist.Unmarshaler, for: HLS.Playlist.Media do
       Tag.Discontinuity,
       Tag.Byterange,
       Tag.Map,
+      Tag.Key,
       Tag.ProgramDateTime
     ]
   end
@@ -168,7 +187,11 @@ defimpl HLS.Playlist.Unmarshaler, for: HLS.Playlist.Media do
   def load_tags(playlist, tags) do
     [version] = Map.get(tags, Tag.Version.id(), [%{value: 1}])
     [segment_duration] = Map.fetch!(tags, Tag.TargetSegmentDuration.id())
-    [sequence_number] = Map.fetch!(tags, Tag.MediaSequenceNumber.id())
+
+    # RFC 8216 §4.3.3.2: "If the Media Playlist file does not contain an
+    # EXT-X-MEDIA-SEQUENCE tag, the Media Sequence Number of the first
+    # Media Segment … SHALL be considered to be 0."
+    [sequence_number] = Map.get(tags, Tag.MediaSequenceNumber.id(), [%{value: 0}])
 
     discontinuity_sequence =
       case Map.get(tags, Tag.DiscontinuitySequence.id(), nil) do
@@ -194,10 +217,10 @@ defimpl HLS.Playlist.Unmarshaler, for: HLS.Playlist.Media do
       end)
       |> Enum.sort()
 
-    # Process segments with init section tracking and from time calculation
+    # Process segments with init section / key tracking and from time calculation
     segments =
       segment_list
-      |> Enum.reduce({[], nil, 0}, fn {_, val}, {acc, last_init, from_acc} ->
+      |> Enum.reduce({[], nil, nil, 0}, fn {_, val}, {acc, last_init, last_key, from_acc} ->
         segment =
           val
           |> Segment.from_tags()
@@ -211,10 +234,19 @@ defimpl HLS.Playlist.Unmarshaler, for: HLS.Playlist.Media do
             {last_init, last_init}
           end
 
-        # Set from time and init section
-        segment = %Segment{segment | init_section: init_section, from: from_acc}
+        # Handle key tracking — EXT-X-KEY applies to all subsequent
+        # segments until the next EXT-X-KEY.
+        {key, new_last_key} =
+          if segment.key != nil do
+            {segment.key, segment.key}
+          else
+            {last_key, last_key}
+          end
 
-        {[segment | acc], new_last_init, from_acc + segment.duration}
+        # Set from time, init section and key
+        segment = %Segment{segment | init_section: init_section, key: key, from: from_acc}
+
+        {[segment | acc], new_last_init, new_last_key, from_acc + segment.duration}
       end)
       |> elem(0)
       |> Enum.reverse()

@@ -163,7 +163,9 @@ defimpl HLS.Playlist.Unmarshaler, for: HLS.Playlist.Master do
   @impl true
   def load_tags(playlist, tags) do
     [version] = Map.get(tags, Tag.Version.id(), [%{value: 1}])
-    independent_segments = Map.get(tags, Tag.IndependentSegments.id(), false)
+    # Map.get returns a list of tag structs when present, false when absent.
+    # Normalize to a proper boolean.
+    independent_segments = Map.get(tags, Tag.IndependentSegments.id(), false) != false
 
     alternatives =
       tags
@@ -280,16 +282,17 @@ defimpl HLS.Playlist.Marshaler, for: HLS.Playlist.Master do
                 "EXT-X-MEDIA with TYPE=CLOSED-CAPTIONS must not include a URI"
         end
 
+      # RFC 8216 §4.3.4.1: URI is OPTIONAL for AUDIO and VIDEO.
+      # When absent, the media data is muxed into every Variant Stream
+      # that references this rendition's group.
       :audio ->
-        if is_nil(alt.uri) do
-          raise ArgumentError, "EXT-X-MEDIA with TYPE=AUDIO requires uri"
-        end
+        :ok
 
       :video ->
-        if is_nil(alt.uri) do
-          raise ArgumentError, "EXT-X-MEDIA with TYPE=VIDEO requires uri"
-        end
+        :ok
 
+      # RFC 8216 §4.3.4.1: "URI … This attribute is REQUIRED if the
+      # TYPE is SUBTITLES."
       :subtitles ->
         if is_nil(alt.uri) do
           raise ArgumentError, "EXT-X-MEDIA with TYPE=SUBTITLES requires uri"

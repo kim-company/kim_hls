@@ -775,4 +775,319 @@ defmodule HLS.PlaylistTest do
       assert Playlist.extract_relative_uri(master, media) == expected
     end
   end
+
+  describe "EXT-X-MEDIA-SEQUENCE defaults to 0" do
+    test "playlist without EXT-X-MEDIA-SEQUENCE parses with sequence 0" do
+      content = """
+      #EXTM3U
+      #EXT-X-VERSION:7
+      #EXT-X-TARGETDURATION:6
+      #EXTINF:6.0,
+      seg0.ts
+      #EXTINF:6.0,
+      seg1.ts
+      """
+
+      playlist = Playlist.unmarshal(content, %Media{})
+      assert playlist.media_sequence_number == 0
+      assert length(playlist.segments) == 2
+
+      [s0, s1] = playlist.segments
+      assert s0.absolute_sequence == 0
+      assert s1.absolute_sequence == 1
+    end
+
+    test "round-trip preserves defaulted 0 sequence" do
+      content = """
+      #EXTM3U
+      #EXT-X-VERSION:7
+      #EXT-X-TARGETDURATION:6
+      #EXTINF:6.0,
+      seg0.ts
+      """
+
+      playlist = Playlist.unmarshal(content, %Media{})
+      assert playlist.media_sequence_number == 0
+      marshaled = Playlist.marshal(playlist)
+      assert marshaled =~ "#EXT-X-MEDIA-SEQUENCE:0"
+    end
+  end
+
+  describe "target_segment_duration coercion" do
+    test "Media.new/2 coerces float to ceiling integer" do
+      media = Media.new(URI.new!("test.m3u8"), 6.0)
+      assert media.target_segment_duration == 6
+      assert is_integer(media.target_segment_duration)
+    end
+
+    test "Media.new/2 with non-round float uses ceiling" do
+      media = Media.new(URI.new!("test.m3u8"), 5.5)
+      assert media.target_segment_duration == 6
+    end
+
+    test "Media.new/2 passes through integers" do
+      media = Media.new(URI.new!("test.m3u8"), 6)
+      assert media.target_segment_duration == 6
+      assert is_integer(media.target_segment_duration)
+    end
+
+    test "marshaled TARGETDURATION is always a decimal-integer" do
+      playlist = %Media{
+        version: 7,
+        target_segment_duration: 6.7,
+        media_sequence_number: 0,
+        segments: [
+          %Segment{
+            duration: 6.0,
+            uri: URI.new!("seg0.ts"),
+            absolute_sequence: 0,
+            relative_sequence: 0
+          }
+        ]
+      }
+
+      marshaled = Playlist.marshal(playlist)
+      assert marshaled =~ "#EXT-X-TARGETDURATION:6\n"
+    end
+  end
+
+  describe "EXT-X-BYTERANGE without offset" do
+    test "parses byterange without offset" do
+      content = """
+      #EXTM3U
+      #EXT-X-VERSION:7
+      #EXT-X-TARGETDURATION:6
+      #EXT-X-MEDIA-SEQUENCE:0
+      #EXTINF:6.0,
+      #EXT-X-BYTERANGE:500
+      seg0.ts
+      """
+
+      playlist = Playlist.unmarshal(content, %Media{})
+      [seg] = playlist.segments
+      assert seg.byterange == %{length: 500, offset: nil}
+    end
+
+    test "round-trips byterange without offset" do
+      content = """
+      #EXTM3U
+      #EXT-X-VERSION:7
+      #EXT-X-TARGETDURATION:6
+      #EXT-X-MEDIA-SEQUENCE:0
+      #EXTINF:6.0,
+      #EXT-X-BYTERANGE:500
+      seg0.ts
+      """
+
+      playlist = Playlist.unmarshal(content, %Media{})
+      marshaled = Playlist.marshal(playlist)
+      assert marshaled =~ "#EXT-X-BYTERANGE:500\n"
+      refute marshaled =~ "#EXT-X-BYTERANGE:500@"
+    end
+
+    test "consecutive byteranges, second without offset" do
+      content = """
+      #EXTM3U
+      #EXT-X-VERSION:7
+      #EXT-X-TARGETDURATION:6
+      #EXT-X-MEDIA-SEQUENCE:0
+      #EXTINF:6.0,
+      #EXT-X-BYTERANGE:500@0
+      data.mp4
+      #EXTINF:6.0,
+      #EXT-X-BYTERANGE:500
+      data.mp4
+      """
+
+      playlist = Playlist.unmarshal(content, %Media{})
+      [s0, s1] = playlist.segments
+      assert s0.byterange == %{length: 500, offset: 0}
+      assert s1.byterange == %{length: 500, offset: nil}
+    end
+  end
+
+  describe "Unmarshal/Marshal EXT-X-KEY" do
+    test "parses EXT-X-KEY with METHOD, URI and IV" do
+      content = """
+      #EXTM3U
+      #EXT-X-VERSION:7
+      #EXT-X-TARGETDURATION:6
+      #EXT-X-MEDIA-SEQUENCE:0
+      #EXT-X-KEY:METHOD=AES-128,URI="https://example.com/key.bin",IV=0x00000000000000000000000000000001
+      #EXTINF:6.0,
+      seg0.ts
+      """
+
+      playlist = Playlist.unmarshal(content, %Media{})
+      [seg] = playlist.segments
+      assert seg.key.method == "AES-128"
+      assert seg.key.uri == "https://example.com/key.bin"
+      assert seg.key.iv == "0x00000000000000000000000000000001"
+    end
+
+    test "key propagates to subsequent segments" do
+      content = """
+      #EXTM3U
+      #EXT-X-VERSION:7
+      #EXT-X-TARGETDURATION:6
+      #EXT-X-MEDIA-SEQUENCE:0
+      #EXT-X-KEY:METHOD=AES-128,URI="https://example.com/key.bin"
+      #EXTINF:6.0,
+      seg0.ts
+      #EXTINF:6.0,
+      seg1.ts
+      """
+
+      playlist = Playlist.unmarshal(content, %Media{})
+      [s0, s1] = playlist.segments
+      assert s0.key == s1.key
+    end
+
+    test "new EXT-X-KEY overrides the previous one" do
+      content = """
+      #EXTM3U
+      #EXT-X-VERSION:7
+      #EXT-X-TARGETDURATION:6
+      #EXT-X-MEDIA-SEQUENCE:0
+      #EXT-X-KEY:METHOD=AES-128,URI="key1.bin"
+      #EXTINF:6.0,
+      seg0.ts
+      #EXT-X-KEY:METHOD=AES-128,URI="key2.bin"
+      #EXTINF:6.0,
+      seg1.ts
+      """
+
+      playlist = Playlist.unmarshal(content, %Media{})
+      [s0, s1] = playlist.segments
+      assert s0.key.uri == "key1.bin"
+      assert s1.key.uri == "key2.bin"
+    end
+
+    test "METHOD=NONE clears encryption" do
+      content = """
+      #EXTM3U
+      #EXT-X-VERSION:7
+      #EXT-X-TARGETDURATION:6
+      #EXT-X-MEDIA-SEQUENCE:0
+      #EXT-X-KEY:METHOD=AES-128,URI="key.bin"
+      #EXTINF:6.0,
+      seg0.ts
+      #EXT-X-KEY:METHOD=NONE
+      #EXTINF:6.0,
+      seg1.ts
+      """
+
+      playlist = Playlist.unmarshal(content, %Media{})
+      [s0, s1] = playlist.segments
+      assert s0.key.method == "AES-128"
+      assert s1.key.method == "NONE"
+    end
+
+    test "segments before any EXT-X-KEY have nil key" do
+      content = """
+      #EXTM3U
+      #EXT-X-VERSION:7
+      #EXT-X-TARGETDURATION:6
+      #EXT-X-MEDIA-SEQUENCE:0
+      #EXTINF:6.0,
+      seg0.ts
+      #EXT-X-KEY:METHOD=AES-128,URI="key.bin"
+      #EXTINF:6.0,
+      seg1.ts
+      """
+
+      playlist = Playlist.unmarshal(content, %Media{})
+      [s0, s1] = playlist.segments
+      assert s0.key == nil
+      assert s1.key.method == "AES-128"
+    end
+
+    test "parses KEYFORMAT and KEYFORMATVERSIONS" do
+      content = """
+      #EXTM3U
+      #EXT-X-VERSION:7
+      #EXT-X-TARGETDURATION:6
+      #EXT-X-MEDIA-SEQUENCE:0
+      #EXT-X-KEY:METHOD=SAMPLE-AES,URI="key.bin",KEYFORMAT="com.apple.streamingkeydelivery",KEYFORMATVERSIONS="1"
+      #EXTINF:6.0,
+      seg0.ts
+      """
+
+      playlist = Playlist.unmarshal(content, %Media{})
+      [seg] = playlist.segments
+      assert seg.key.keyformat == "com.apple.streamingkeydelivery"
+      assert seg.key.keyformatversions == "1"
+    end
+
+    test "marshal round-trips key information" do
+      content = """
+      #EXTM3U
+      #EXT-X-VERSION:7
+      #EXT-X-TARGETDURATION:6
+      #EXT-X-MEDIA-SEQUENCE:0
+      #EXT-X-KEY:METHOD=AES-128,URI="https://example.com/key.bin",IV=0x00000000000000000000000000000001
+      #EXTINF:6.00000,
+      seg0.ts
+      #EXTINF:6.00000,
+      seg1.ts
+      #EXT-X-KEY:METHOD=NONE
+      #EXTINF:6.00000,
+      seg2.ts
+      """
+
+      playlist = Playlist.unmarshal(content, %Media{})
+      marshaled = Playlist.marshal(playlist)
+      re_parsed = Playlist.unmarshal(marshaled, %Media{})
+
+      [s0, s1, s2] = re_parsed.segments
+      assert s0.key.method == "AES-128"
+      assert s0.key.uri == "https://example.com/key.bin"
+      assert s1.key.method == "AES-128"
+      assert s2.key.method == "NONE"
+    end
+
+    test "marshal only emits EXT-X-KEY when key changes" do
+      content = """
+      #EXTM3U
+      #EXT-X-VERSION:7
+      #EXT-X-TARGETDURATION:6
+      #EXT-X-MEDIA-SEQUENCE:0
+      #EXT-X-KEY:METHOD=AES-128,URI="key.bin"
+      #EXTINF:6.00000,
+      seg0.ts
+      #EXTINF:6.00000,
+      seg1.ts
+      #EXT-X-KEY:METHOD=NONE
+      #EXTINF:6.00000,
+      seg2.ts
+      """
+
+      playlist = Playlist.unmarshal(content, %Media{})
+      marshaled = Playlist.marshal(playlist)
+      key_count = marshaled |> String.split("#EXT-X-KEY:") |> length() |> Kernel.-(1)
+      assert key_count == 2
+    end
+
+    test "EXT-X-KEY tag appears before EXTINF in marshaled output" do
+      content = """
+      #EXTM3U
+      #EXT-X-VERSION:7
+      #EXT-X-TARGETDURATION:6
+      #EXT-X-MEDIA-SEQUENCE:0
+      #EXT-X-KEY:METHOD=AES-128,URI="key.bin"
+      #EXTINF:6.00000,
+      seg0.ts
+      """
+
+      playlist = Playlist.unmarshal(content, %Media{})
+      marshaled = Playlist.marshal(playlist)
+      lines = String.split(marshaled, "\n")
+
+      key_idx = Enum.find_index(lines, &String.starts_with?(&1, "#EXT-X-KEY:"))
+      inf_idx = Enum.find_index(lines, &String.starts_with?(&1, "#EXTINF:"))
+
+      assert key_idx != nil
+      assert key_idx < inf_idx
+    end
+  end
 end

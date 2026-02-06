@@ -1,7 +1,7 @@
 defmodule HLS.AlternativeRendition do
   alias HLS.Playlist.Tag
 
-  @type type_t :: :subtitles | :audio | :video | :cc
+  @type type_t :: :subtitles | :audio | :video | :closed_captions
   @type t :: %__MODULE__{
           type: type_t(),
           group_id: Tag.group_id_t(),
