@@ -165,6 +165,7 @@ defmodule HLS.Packager do
             pending_playlist: Media.t(),
             pending_segments: [%{segment: Segment.t(), uploaded?: boolean(), id: String.t()}],
             codecs: [String.t()],
+            codecs_complete?: boolean(),
             mandatory?: boolean(),
             total_segment_bits: non_neg_integer(),
             total_segment_duration: float(),
@@ -198,7 +199,8 @@ defmodule HLS.Packager do
       :applied_discontinuities,
       resume_incomplete?: false,
       pending_segments: [],
-      codecs: []
+      codecs: [],
+      codecs_complete?: true
     ]
   end
 
@@ -397,6 +399,7 @@ defmodule HLS.Packager do
         media_playlist: media_playlist,
         pending_playlist: %{media_playlist | uri: append_to_path(media_playlist.uri, "_pending")},
         codecs: opts.codecs,
+        codecs_complete?: opts.codecs_complete?,
         mandatory?: resolve_mandatory(opts.mandatory?, stream),
         total_segment_bits: 0,
         total_segment_duration: 0.0,
@@ -1299,8 +1302,13 @@ defmodule HLS.Packager do
           |> Enum.flat_map(& &1.codecs)
 
         all_codecs =
-          (track.stream.codecs ++ track.codecs ++ alternative_codecs)
+          (List.wrap(track.stream.codecs) ++ track.codecs ++ alternative_codecs)
           |> Enum.uniq()
+
+        codecs_complete? =
+          track.codecs_complete? and Enum.all?(grouped_alternatives, & &1.codecs_complete?)
+
+        codecs = if codecs_complete? and all_codecs != [], do: all_codecs, else: nil
 
         bandwidth =
           aggregate_variant_bitrate(
@@ -1320,7 +1328,7 @@ defmodule HLS.Packager do
 
         updated_stream = %{
           track.stream
-          | codecs: all_codecs,
+          | codecs: codecs,
             bandwidth: bandwidth,
             average_bandwidth: average_bandwidth
         }
@@ -1933,6 +1941,7 @@ defmodule HLS.Packager do
       segment_extension: Keyword.fetch!(opts, :segment_extension),
       target_segment_duration: Keyword.fetch!(opts, :target_segment_duration),
       codecs: Keyword.get(opts, :codecs, []),
+      codecs_complete?: Keyword.get(opts, :codecs_complete?, true),
       mandatory?: Keyword.get(opts, :mandatory?, nil)
     }
   end
@@ -2139,6 +2148,7 @@ defmodule HLS.Packager do
        media_playlist: %{media | type: type},
        pending_playlist: %{media | uri: append_to_path(media.uri, "_pending"), segments: []},
        codecs: [],
+       codecs_complete?: true,
        mandatory?: resolve_mandatory(nil, stream),
        total_segment_bits: 0,
        total_segment_duration: 0.0,
@@ -2297,6 +2307,14 @@ defmodule HLS.Packager do
            details: %{track_id: track_id}
          }}
 
+      track.codecs_complete? != opts.codecs_complete? ->
+        {:error,
+         %Error{
+           code: :track_conflict,
+           message: "Track #{track_id} already exists with different codec completeness",
+           details: %{track_id: track_id}
+         }}
+
       true ->
         target_duration =
           track.media_playlist.target_segment_duration || opts.target_segment_duration
@@ -2310,6 +2328,7 @@ defmodule HLS.Packager do
             media_playlist: updated_media,
             pending_playlist: updated_pending,
             codecs: if(track.codecs == [], do: opts.codecs, else: track.codecs),
+            codecs_complete?: opts.codecs_complete?,
             mandatory?: mandatory?,
             resume_incomplete?: false
         }
@@ -2339,6 +2358,7 @@ defmodule HLS.Packager do
       track.media_playlist.target_segment_duration == opts.target_segment_duration and
       track.media_playlist.uri == media_playlist_uri and
       codecs_match and
+      track.codecs_complete? == opts.codecs_complete? and
       track.mandatory? == mandatory?
   end
 end

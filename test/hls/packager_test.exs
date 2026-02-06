@@ -520,6 +520,43 @@ defmodule HLS.PackagerTest do
       refute media_line =~ "URI="
     end
 
+    test "omits CODECS when codec set is incomplete", %{
+      manifest_uri: manifest_uri,
+      storage: storage
+    } do
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri)
+
+      {state, []} =
+        Packager.add_track(state, "video",
+          stream: %VariantStream{},
+          codecs: [],
+          codecs_complete?: false,
+          segment_extension: ".ts",
+          target_segment_duration: 2.0
+        )
+
+      {state, _} =
+        Enum.reduce(0..2, {state, []}, fn idx, {s, _} ->
+          pts = idx * 2_000_000_000
+
+          {s, actions} =
+            Packager.put_segment(s, "video", duration: 2.0, pts: pts, size_bytes: 250_000)
+
+          action = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
+          ActionExecutor.execute_action(action, storage, manifest_uri)
+          {s, _} = Packager.confirm_upload(s, action.id)
+          {s, []}
+        end)
+
+      {_state, actions} = Packager.sync(state, 3)
+
+      master_action =
+        Enum.find(actions, &match?(%Packager.Action.WritePlaylist{type: :master}, &1))
+
+      assert master_action != nil
+      refute master_action.content =~ "CODECS="
+    end
+
     test "master playlist is rewritten after first write and reflects measured bandwidth", %{
       manifest_uri: manifest_uri,
       storage: storage

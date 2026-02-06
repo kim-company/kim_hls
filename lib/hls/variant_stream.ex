@@ -5,7 +5,7 @@ defmodule HLS.VariantStream do
           uri: nil | URI.t(),
           bandwidth: pos_integer() | nil,
           average_bandwidth: pos_integer() | nil,
-          codecs: [String.t()],
+          codecs: [String.t()] | nil,
           resolution: {pos_integer(), pos_integer()},
           frame_rate: float(),
           hdcp_level: :none | :type_0,
@@ -15,12 +15,13 @@ defmodule HLS.VariantStream do
           closed_captions: Tag.group_id_t()
         }
 
-  @mandatory_keys [:codecs]
+  @mandatory_keys []
   @enforce_keys @mandatory_keys
   @optional_keys [
     :uri,
     :bandwidth,
     :average_bandwidth,
+    :codecs,
     :resolution,
     :frame_rate,
     :audio,
@@ -46,6 +47,7 @@ defmodule HLS.VariantStream do
       |> Enum.reduce(%{}, fn key, acc ->
         case Map.get(attrs, key) do
           nil -> acc
+          [] -> acc
           value -> Map.put(acc, key, value)
         end
       end)
@@ -66,6 +68,7 @@ defmodule HLS.VariantStream do
       |> Enum.reduce(attrs, fn key, acc ->
         case Map.get(data, key) do
           nil -> acc
+          [] -> acc
           value -> Map.put(acc, key, value)
         end
       end)
