@@ -166,6 +166,10 @@ defmodule HLS.Packager do
             pending_segments: [%{segment: Segment.t(), uploaded?: boolean(), id: String.t()}],
             codecs: [String.t()],
             mandatory?: boolean(),
+            total_segment_bits: non_neg_integer(),
+            total_segment_duration: float(),
+            peak_segment_bitrate: pos_integer() | nil,
+            peak_window_segments: [{float(), non_neg_integer()}],
             last_timestamp_ns: non_neg_integer() | nil,
             last_duration_ns: non_neg_integer() | nil,
             base_pdt: DateTime.t() | nil,
@@ -185,6 +189,10 @@ defmodule HLS.Packager do
       :base_pdt,
       :base_timestamp_ns,
       :mandatory?,
+      :total_segment_bits,
+      :total_segment_duration,
+      :peak_segment_bitrate,
+      :peak_window_segments,
       :last_timestamp_ns,
       :last_duration_ns,
       :applied_discontinuities,
@@ -283,7 +291,9 @@ defmodule HLS.Packager do
 
     with {:ok, validated} <- validate_resume_opts(opts),
          {:ok, {tracks, common_sync_point}} <-
-           build_tracks_from_playlists(Map.put(validated, :timeline_reference, timeline_reference)) do
+           build_tracks_from_playlists(
+             Map.put(validated, :timeline_reference, timeline_reference)
+           ) do
       master = validated.master_playlist
 
       state = %__MODULE__{
@@ -388,6 +398,10 @@ defmodule HLS.Packager do
         pending_playlist: %{media_playlist | uri: append_to_path(media_playlist.uri, "_pending")},
         codecs: opts.codecs,
         mandatory?: resolve_mandatory(opts.mandatory?, stream),
+        total_segment_bits: 0,
+        total_segment_duration: 0.0,
+        peak_segment_bitrate: nil,
+        peak_window_segments: [],
         last_timestamp_ns: nil,
         last_duration_ns: nil,
         base_pdt: state.timeline_reference,
@@ -509,6 +523,7 @@ defmodule HLS.Packager do
     duration = Keyword.fetch!(opts, :duration)
     pts = Keyword.fetch!(opts, :pts)
     dts = Keyword.get(opts, :dts)
+    size_bytes = Keyword.get(opts, :size_bytes)
     timestamp_ns = dts || pts
 
     case resume_track_ready?(track, track_id) do
@@ -520,7 +535,8 @@ defmodule HLS.Packager do
           {:skip, new_state} ->
             warning = %Error{
               code: :sync_point_skipped,
-              message: "Sync point #{track.segment_count + 1} was skipped for track '#{track_id}'",
+              message:
+                "Sync point #{track.segment_count + 1} was skipped for track '#{track_id}'",
               details: %{
                 track_id: track_id,
                 sync_point: track.segment_count + 1
@@ -575,18 +591,39 @@ defmodule HLS.Packager do
                     duration_ns,
                     pts,
                     dts,
-                    timestamp_ns
+                    timestamp_ns,
+                    size_bytes
                   )
                 end
               else
-                do_put_segment(state, track_id, track, duration, duration_ns, pts, dts, timestamp_ns)
+                do_put_segment(
+                  state,
+                  track_id,
+                  track,
+                  duration,
+                  duration_ns,
+                  pts,
+                  dts,
+                  timestamp_ns,
+                  size_bytes
+                )
               end
             end
         end
     end
   end
 
-  defp do_put_segment(state, track_id, track, duration, duration_ns, pts, dts, timestamp_ns) do
+  defp do_put_segment(
+         state,
+         track_id,
+         track,
+         duration,
+         duration_ns,
+         pts,
+         dts,
+         timestamp_ns,
+         size_bytes
+       ) do
     next_index = track.segment_count + 1
 
     segment_uri =
@@ -613,6 +650,14 @@ defmodule HLS.Packager do
       id: upload_id
     }
 
+    bitrate_stats =
+      update_bitrate_stats(
+        track,
+        duration,
+        size_bytes,
+        track.media_playlist.target_segment_duration
+      )
+
     new_state =
       update_in(state.tracks[track_id], fn t ->
         t
@@ -621,6 +666,10 @@ defmodule HLS.Packager do
         |> Map.put(:base_timestamp_ns, base_timestamp_ns)
         |> Map.put(:last_timestamp_ns, timestamp_ns)
         |> Map.put(:last_duration_ns, duration_ns)
+        |> Map.put(:total_segment_bits, bitrate_stats.total_segment_bits)
+        |> Map.put(:total_segment_duration, bitrate_stats.total_segment_duration)
+        |> Map.put(:peak_segment_bitrate, bitrate_stats.peak_segment_bitrate)
+        |> Map.put(:peak_window_segments, bitrate_stats.peak_window_segments)
         |> Map.update!(:pending_segments, &(&1 ++ [pending_segment]))
       end)
 
@@ -763,7 +812,9 @@ defmodule HLS.Packager do
       state =
         state
         |> then(fn current_state ->
-          if skip_existing?, do: current_state, else: mark_skipped_sync_point(current_state, sync_point)
+          if skip_existing?,
+            do: current_state,
+            else: mark_skipped_sync_point(current_state, sync_point)
         end)
         |> drop_pending_segments_at_sync_point(sync_point)
 
@@ -1208,10 +1259,6 @@ defmodule HLS.Packager do
     end
   end
 
-  defp maybe_write_master(state, _sync_point) when state.master_written? do
-    {state, []}
-  end
-
   defp maybe_write_master(state, sync_point) do
     if sync_point >= 3 do
       master = build_master(state)
@@ -1234,6 +1281,8 @@ defmodule HLS.Packager do
       |> Map.values()
       |> Enum.filter(&is_struct(&1.stream, AlternativeRendition))
 
+    alternative_by_group = Enum.group_by(alternative_tracks, & &1.stream.group_id)
+
     variant_tracks =
       state.tracks
       |> Map.values()
@@ -1241,16 +1290,42 @@ defmodule HLS.Packager do
       |> Enum.map(fn track ->
         group_ids = VariantStream.associated_group_ids(track.stream)
 
+        grouped_alternatives =
+          group_ids
+          |> Enum.flat_map(fn group_id -> Map.get(alternative_by_group, group_id, []) end)
+
         alternative_codecs =
-          alternative_tracks
-          |> Enum.filter(&Enum.member?(group_ids, &1.stream.group_id))
+          grouped_alternatives
           |> Enum.flat_map(& &1.codecs)
 
         all_codecs =
           (track.stream.codecs ++ track.codecs ++ alternative_codecs)
           |> Enum.uniq()
 
-        %{track | stream: %{track.stream | codecs: all_codecs}}
+        bandwidth =
+          aggregate_variant_bitrate(
+            track,
+            grouped_alternatives,
+            :peak_segment_bitrate,
+            :bandwidth
+          )
+
+        average_bandwidth =
+          aggregate_variant_bitrate(
+            track,
+            grouped_alternatives,
+            :average_segment_bitrate,
+            :average_bandwidth
+          )
+
+        updated_stream = %{
+          track.stream
+          | codecs: all_codecs,
+            bandwidth: bandwidth,
+            average_bandwidth: average_bandwidth
+        }
+
+        %{track | stream: updated_stream}
       end)
 
     # RFC 8216 §4.3.1.2: Use the highest version required by any playlist.
@@ -1669,6 +1744,121 @@ defmodule HLS.Packager do
     |> Kernel.+(1)
   end
 
+  defp aggregate_variant_bitrate(variant_track, grouped_alternatives, metric, fallback_field) do
+    variant_value = track_bitrate_metric(variant_track, metric)
+
+    alternatives_value =
+      grouped_alternatives
+      |> Enum.group_by(&{&1.stream.type, &1.stream.group_id})
+      |> Enum.reduce(0, fn {_group_key, tracks}, acc ->
+        best_in_group =
+          tracks
+          |> Enum.map(&track_bitrate_metric(&1, metric))
+          |> Enum.reject(&is_nil/1)
+          |> Enum.max(fn -> 0 end)
+
+        acc + best_in_group
+      end)
+
+    measured =
+      case variant_value do
+        nil -> if alternatives_value > 0, do: alternatives_value, else: nil
+        value -> value + alternatives_value
+      end
+
+    fallback = Map.get(variant_track.stream, fallback_field)
+
+    measured || fallback
+  end
+
+  defp track_bitrate_metric(track, :peak_segment_bitrate), do: track.peak_segment_bitrate
+
+  defp track_bitrate_metric(track, :average_segment_bitrate) do
+    if track.total_segment_duration > 0 do
+      round(track.total_segment_bits / track.total_segment_duration)
+    else
+      nil
+    end
+  end
+
+  defp update_bitrate_stats(track, duration, size_bytes, target_segment_duration)
+       when is_integer(size_bytes) and size_bytes > 0 and is_number(duration) and duration > 0 do
+    segment_bits = size_bytes * 8
+
+    peak_window_segments =
+      trim_peak_window(
+        track.peak_window_segments ++ [{duration, segment_bits}],
+        target_segment_duration
+      )
+
+    measured_peak =
+      compute_peak_window_bitrate(peak_window_segments, target_segment_duration) ||
+        track.peak_segment_bitrate
+
+    %{
+      total_segment_bits: track.total_segment_bits + segment_bits,
+      total_segment_duration: track.total_segment_duration + duration,
+      peak_segment_bitrate: max_bitrate(track.peak_segment_bitrate, measured_peak),
+      peak_window_segments: peak_window_segments
+    }
+  end
+
+  defp update_bitrate_stats(track, _duration, _size_bytes, _target_segment_duration) do
+    %{
+      total_segment_bits: track.total_segment_bits,
+      total_segment_duration: track.total_segment_duration,
+      peak_segment_bitrate: track.peak_segment_bitrate,
+      peak_window_segments: track.peak_window_segments
+    }
+  end
+
+  defp trim_peak_window(segments, target_segment_duration)
+       when is_number(target_segment_duration) do
+    max_duration = 1.5 * target_segment_duration
+
+    Enum.reduce(Enum.reverse(segments), {[], 0.0}, fn {duration, bits}, {acc, total_duration} ->
+      if total_duration + duration <= max_duration do
+        {[{duration, bits} | acc], total_duration + duration}
+      else
+        {acc, total_duration}
+      end
+    end)
+    |> elem(0)
+  end
+
+  defp trim_peak_window(segments, _target_segment_duration), do: segments
+
+  defp compute_peak_window_bitrate([], _target_segment_duration), do: nil
+
+  defp compute_peak_window_bitrate(segments, target_segment_duration)
+       when is_number(target_segment_duration) and target_segment_duration > 0 do
+    min_duration = 0.5 * target_segment_duration
+    max_duration = 1.5 * target_segment_duration
+
+    for i <- 0..(length(segments) - 1),
+        j <- i..(length(segments) - 1),
+        reduce: nil do
+      best ->
+        window = Enum.slice(segments, i..j)
+        duration = Enum.reduce(window, 0.0, fn {d, _}, acc -> acc + d end)
+
+        if duration >= min_duration and duration <= max_duration do
+          bits = Enum.reduce(window, 0, fn {_, b}, acc -> acc + b end)
+          bitrate = round(bits / duration)
+          max_bitrate(best, bitrate)
+        else
+          best
+        end
+    end
+  end
+
+  defp compute_peak_window_bitrate(_segments, _target_segment_duration), do: nil
+
+  defp max_bitrate(nil, nil), do: nil
+  defp max_bitrate(nil, b), do: b
+  defp max_bitrate(a, nil), do: a
+  defp max_bitrate(a, b), do: max(a, b)
+
   defp segment_timestamp_ns(%Segment{dts: dts, pts: pts}) do
     dts || pts
   end
@@ -1816,7 +2006,12 @@ defmodule HLS.Packager do
                     {media, false}
                 end
 
-              entry = %{track_id: track_id, stream: stream, media: media, missing_media?: missing?}
+              entry = %{
+                track_id: track_id,
+                stream: stream,
+                media: media,
+                missing_media?: missing?
+              }
 
               {:cont,
                {:ok, [entry | acc], MapSet.put(referenced_uris, to_string(uri)),
@@ -1945,6 +2140,10 @@ defmodule HLS.Packager do
        pending_playlist: %{media | uri: append_to_path(media.uri, "_pending"), segments: []},
        codecs: [],
        mandatory?: resolve_mandatory(nil, stream),
+       total_segment_bits: 0,
+       total_segment_duration: 0.0,
+       peak_segment_bitrate: nil,
+       peak_window_segments: [],
        last_timestamp_ns: nil,
        last_duration_ns: nil,
        base_pdt: timeline_reference,

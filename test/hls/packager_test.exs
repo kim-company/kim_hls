@@ -519,6 +519,62 @@ defmodule HLS.PackagerTest do
       assert media_line =~ "INSTREAM-ID=\"CC1\""
       refute media_line =~ "URI="
     end
+
+    test "master playlist is rewritten after first write and reflects measured bandwidth", %{
+      manifest_uri: manifest_uri,
+      storage: storage
+    } do
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri)
+
+      {state, []} =
+        Packager.add_track(state, "video",
+          stream: %VariantStream{codecs: ["avc1.64001f"]},
+          segment_extension: ".ts",
+          target_segment_duration: 2.0
+        )
+
+      {state, _} =
+        Enum.reduce(0..2, {state, []}, fn idx, {s, _} ->
+          pts = idx * 2_000_000_000
+
+          {s, actions} =
+            Packager.put_segment(s, "video", duration: 2.0, pts: pts, size_bytes: 250_000)
+
+          action = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
+          ActionExecutor.execute_action(action, storage, manifest_uri)
+          {s, _} = Packager.confirm_upload(s, action.id)
+          {s, []}
+        end)
+
+      {_state, actions} = Packager.sync(state, 3)
+
+      first_master =
+        Enum.find(actions, &match?(%Packager.Action.WritePlaylist{type: :master}, &1))
+
+      assert first_master != nil
+      assert first_master.content =~ "BANDWIDTH=1000000"
+      assert first_master.content =~ "AVERAGE-BANDWIDTH=1000000"
+
+      {state, actions} =
+        Packager.put_segment(state, "video",
+          duration: 2.0,
+          pts: 6_000_000_000,
+          size_bytes: 500_000
+        )
+
+      action = Enum.find(actions, &match?(%Packager.Action.UploadSegment{}, &1))
+      ActionExecutor.execute_action(action, storage, manifest_uri)
+      {state, _} = Packager.confirm_upload(state, action.id)
+
+      {_state, sync_actions} = Packager.sync(state, 4)
+
+      rewritten_master =
+        Enum.find(sync_actions, &match?(%Packager.Action.WritePlaylist{type: :master}, &1))
+
+      assert rewritten_master != nil
+      assert rewritten_master.content =~ "BANDWIDTH=2000000"
+      assert rewritten_master.content =~ "AVERAGE-BANDWIDTH=1250000"
+    end
   end
 
   describe "sync readiness helper" do

@@ -3,8 +3,8 @@ defmodule HLS.VariantStream do
 
   @type t :: %__MODULE__{
           uri: nil | URI.t(),
-          bandwidth: pos_integer(),
-          average_bandwidth: pos_integer(),
+          bandwidth: pos_integer() | nil,
+          average_bandwidth: pos_integer() | nil,
           codecs: [String.t()],
           resolution: {pos_integer(), pos_integer()},
           frame_rate: float(),
@@ -15,10 +15,11 @@ defmodule HLS.VariantStream do
           closed_captions: Tag.group_id_t()
         }
 
-  @mandatory_keys [:bandwidth, :codecs]
+  @mandatory_keys [:codecs]
   @enforce_keys @mandatory_keys
   @optional_keys [
     :uri,
+    :bandwidth,
     :average_bandwidth,
     :resolution,
     :frame_rate,

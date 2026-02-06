@@ -67,7 +67,12 @@ defmodule HLS.Playlist.Master do
           AlternativeRendition.type_t(),
           (AlternativeRendition.t() -> AlternativeRendition.t())
         ) :: t()
-  def update_alternative_rendition(%__MODULE__{} = master, rendition_name, rendition_type, update_fn) do
+  def update_alternative_rendition(
+        %__MODULE__{} = master,
+        rendition_name,
+        rendition_type,
+        update_fn
+      ) do
     is_present =
       master.alternative_renditions
       |> Enum.filter(fn alt -> alt.name == rendition_name and alt.type == rendition_type end)
@@ -206,6 +211,8 @@ defimpl HLS.Playlist.Marshaler, for: HLS.Playlist.Master do
   end
 
   defp marshal_stream_inf(streams) do
+    Enum.each(streams, &validate_variant_stream!/1)
+
     tags =
       streams
       |> Enum.map(&VariantStream.to_tag/1)
@@ -260,6 +267,17 @@ defimpl HLS.Playlist.Marshaler, for: HLS.Playlist.Master do
     end)
   end
 
+  defp validate_variant_stream!(%VariantStream{} = stream) do
+    if is_nil(stream.bandwidth) or stream.bandwidth <= 0 do
+      raise ArgumentError, "EXT-X-STREAM-INF requires bandwidth to be set to a positive integer"
+    end
+
+    if stream.average_bandwidth && stream.average_bandwidth <= 0 do
+      raise ArgumentError,
+            "EXT-X-STREAM-INF average_bandwidth must be a positive integer when set"
+    end
+  end
+
   defp validate_alternative_rendition!(%AlternativeRendition{} = alt) do
     required_keys = [:type, :group_id, :name]
 
@@ -302,8 +320,10 @@ defimpl HLS.Playlist.Marshaler, for: HLS.Playlist.Master do
 
   defp prepare_attributes({:resolution, {x, y}}), do: {"RESOLUTION", ~c"#{x}x#{y}"}
   defp prepare_attributes({:codecs, codecs}), do: {"CODECS", Enum.join(codecs, ",")}
+
   defp prepare_attributes({:type, type}),
     do: {"TYPE", type |> to_string() |> String.upcase() |> String.replace("_", "-")}
+
   defp prepare_attributes({:uri, uri}), do: {"URI", to_string(uri)}
   defp prepare_attributes({:characteristics, list}), do: {"CHARACTERISTICS", Enum.join(list, ",")}
 
