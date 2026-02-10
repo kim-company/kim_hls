@@ -2823,6 +2823,56 @@ defmodule HLS.PackagerTest do
       assert final_state == resumed_state
     end
 
+    test "add_track after resume tolerates variant metadata drift and unknown codecs", %{
+      manifest_uri: manifest_uri,
+      storage: storage
+    } do
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri)
+
+      {state, []} =
+        Packager.add_track(state, "video_fhd",
+          stream: %VariantStream{
+            bandwidth: 2_000_000,
+            average_bandwidth: 1_800_000,
+            resolution: {1920, 1080},
+            frame_rate: 30.0
+          },
+          segment_extension: ".ts",
+          target_segment_duration: 6.0,
+          codecs: [],
+          codecs_complete?: false
+        )
+
+      state = add_segments(state, storage, manifest_uri, "video_fhd", 3, 6.0)
+      {state, actions} = Packager.sync(state, 3)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      master_content = load_master_content(storage, manifest_uri)
+      master = HLS.Playlist.unmarshal(master_content, %Master{uri: manifest_uri})
+
+      media_playlists =
+        state.tracks
+        |> Map.values()
+        |> Enum.map(& &1.media_playlist)
+
+      {:ok, resumed_state} =
+        Packager.resume(master_playlist: master, media_playlists: media_playlists)
+
+      {final_state, []} =
+        Packager.add_track(resumed_state, "video_fhd",
+          stream: %VariantStream{
+            resolution: {1920, 1080},
+            frame_rate: 30.0
+          },
+          segment_extension: ".ts",
+          target_segment_duration: 6.0,
+          codecs: [],
+          codecs_complete?: false
+        )
+
+      assert final_state == resumed_state
+    end
+
     test "allows resume with missing playlists but blocks segments until reconciled", %{
       manifest_uri: manifest_uri,
       storage: storage

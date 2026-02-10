@@ -2258,7 +2258,7 @@ defmodule HLS.Packager do
 
   defp reconcile_incomplete_track(track, track_id, stream, media_playlist_uri, opts, mandatory?) do
     cond do
-      track.stream != stream ->
+      not stream_spec_matches?(track.stream, stream) ->
         {:error,
          %Error{
            code: :track_conflict,
@@ -2307,14 +2307,6 @@ defmodule HLS.Packager do
            details: %{track_id: track_id}
          }}
 
-      track.codecs_complete? != opts.codecs_complete? ->
-        {:error,
-         %Error{
-           code: :track_conflict,
-           message: "Track #{track_id} already exists with different codec completeness",
-           details: %{track_id: track_id}
-         }}
-
       true ->
         target_duration =
           track.media_playlist.target_segment_duration || opts.target_segment_duration
@@ -2328,7 +2320,7 @@ defmodule HLS.Packager do
             media_playlist: updated_media,
             pending_playlist: updated_pending,
             codecs: if(track.codecs == [], do: opts.codecs, else: track.codecs),
-            codecs_complete?: opts.codecs_complete?,
+            codecs_complete?: track.codecs_complete? || opts.codecs_complete?,
             mandatory?: mandatory?,
             resume_incomplete?: false
         }
@@ -2344,7 +2336,7 @@ defmodule HLS.Packager do
           true
 
         track.codecs == [] and is_struct(stream, VariantStream) ->
-          Enum.all?(opts.codecs, &(&1 in stream.codecs))
+          Enum.all?(opts.codecs, &(&1 in List.wrap(stream.codecs)))
 
         track.codecs == [] and is_struct(stream, AlternativeRendition) ->
           true
@@ -2353,12 +2345,28 @@ defmodule HLS.Packager do
           false
       end
 
-    track.stream == stream and
+    stream_spec_matches?(track.stream, stream) and
       track.segment_extension == opts.segment_extension and
       track.media_playlist.target_segment_duration == opts.target_segment_duration and
       track.media_playlist.uri == media_playlist_uri and
       codecs_match and
-      track.codecs_complete? == opts.codecs_complete? and
       track.mandatory? == mandatory?
+  end
+
+  defp stream_spec_matches?(%VariantStream{} = existing, %VariantStream{} = incoming) do
+    normalize_variant_stream(existing) == normalize_variant_stream(incoming)
+  end
+
+  defp stream_spec_matches?(
+         %AlternativeRendition{} = existing,
+         %AlternativeRendition{} = incoming
+       ) do
+    existing == incoming
+  end
+
+  defp stream_spec_matches?(existing, incoming), do: existing == incoming
+
+  defp normalize_variant_stream(stream) do
+    %{stream | bandwidth: nil, average_bandwidth: nil, codecs: nil}
   end
 end
