@@ -2335,10 +2335,16 @@ defmodule HLS.Packager do
         track.codecs == opts.codecs ->
           true
 
-        track.codecs == [] and is_struct(stream, VariantStream) ->
-          Enum.all?(opts.codecs, &(&1 in List.wrap(stream.codecs)))
+        # Either side has no codecs — not a conflict. Empty codecs means the
+        # information isn't available yet (e.g. TS sink before codec derivation,
+        # or track after resume before first add_track).
+        opts.codecs == [] or track.codecs == [] ->
+          true
 
-        track.codecs == [] and is_struct(stream, AlternativeRendition) ->
+        # Incoming codecs are a subset of existing (e.g. video-only muxer
+        # re-adding after resume populated full codecs from master) — not a
+        # conflict.
+        Enum.all?(opts.codecs, &(&1 in track.codecs)) ->
           true
 
         true ->

@@ -2873,6 +2873,93 @@ defmodule HLS.PackagerTest do
       assert final_state == resumed_state
     end
 
+    test "add_track after resume tolerates re-add with partial or empty codecs", %{
+      manifest_uri: manifest_uri,
+      storage: storage
+    } do
+      # Simulate: initial session adds a track with known codecs, syncs, then
+      # crash group rebuild resumes. After resume, add_track is called twice
+      # (TS muxer emitting two stream_format notifications). The second call
+      # must not raise track_conflict even with partial/empty codecs.
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri)
+
+      {state, []} =
+        Packager.add_track(state, "video_480p",
+          stream: %VariantStream{
+            bandwidth: 1_100_000,
+            average_bandwidth: 900_000,
+            resolution: {854, 480},
+            frame_rate: 30.0,
+            codecs: ["avc1.4d001f", "mp4a.40.2"]
+          },
+          segment_extension: ".ts",
+          target_segment_duration: 6.0,
+          codecs: ["avc1.4d001f"],
+          codecs_complete?: true
+        )
+
+      state = add_segments(state, storage, manifest_uri, "video_480p", 5, 6.0)
+      {state, actions} = Packager.sync(state, 5)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      # Resume from persisted playlists.
+      master_content = load_master_content(storage, manifest_uri)
+      master = HLS.Playlist.unmarshal(master_content, %Master{uri: manifest_uri})
+
+      media_playlists =
+        state.tracks
+        |> Map.values()
+        |> Enum.map(& &1.media_playlist)
+
+      {:ok, resumed} =
+        Packager.resume(master_playlist: master, media_playlists: media_playlists)
+
+      # First add_track after resume — reconciles the incomplete track.
+      {reconciled, []} =
+        Packager.add_track(resumed, "video_480p",
+          stream: %VariantStream{
+            resolution: {854, 480},
+            frame_rate: 30.0
+          },
+          segment_extension: ".ts",
+          target_segment_duration: 6.0,
+          codecs: ["avc1.4d001f"],
+          codecs_complete?: true
+        )
+
+      # Second add_track — same track, but with empty codecs (TS sink hasn't
+      # derived codecs yet on this stream_format). Must not raise.
+      {still_same, []} =
+        Packager.add_track(reconciled, "video_480p",
+          stream: %VariantStream{
+            resolution: {854, 480},
+            frame_rate: 30.0
+          },
+          segment_extension: ".ts",
+          target_segment_duration: 6.0,
+          codecs: [],
+          codecs_complete?: false
+        )
+
+      assert still_same == reconciled
+
+      # Third add_track — subset codecs (video-only, no audio codec). Must not
+      # raise either.
+      {still_same2, []} =
+        Packager.add_track(reconciled, "video_480p",
+          stream: %VariantStream{
+            resolution: {854, 480},
+            frame_rate: 30.0
+          },
+          segment_extension: ".ts",
+          target_segment_duration: 6.0,
+          codecs: ["avc1.4d001f"],
+          codecs_complete?: true
+        )
+
+      assert still_same2 == reconciled
+    end
+
     test "allows resume with missing playlists but blocks segments until reconciled", %{
       manifest_uri: manifest_uri,
       storage: storage
