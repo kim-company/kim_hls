@@ -571,6 +571,68 @@ defmodule HLS.PackagerTest do
              ]
     end
 
+    test "removes extra segments ahead on resume for event playlists", %{
+      storage: storage,
+      manifest_uri: manifest_uri,
+      temp_dir: temp_dir
+    } do
+      master_content =
+        create_master_content([
+          {1_000_000, "avc1.64001e", "640x360", "stream_track1.m3u8"},
+          {500_000, "avc1.64001e", "416x234", "stream_track2.m3u8"}
+        ])
+
+      File.write!(Path.join(temp_dir, "stream.m3u8"), master_content)
+
+      track1_content = create_track("stream_track1", 0, 3, 1)
+      File.write!(Path.join(temp_dir, "stream_track1.m3u8"), track1_content)
+
+      track2_content = create_track("stream_track2", 0, 5, 1)
+      File.write!(Path.join(temp_dir, "stream_track2.m3u8"), track2_content)
+
+      for {track, max_seg} <- [{"track1", 3}, {"track2", 5}] do
+        for i <- 1..max_seg do
+          segment_dir = Path.join(temp_dir, "stream_#{track}/00000")
+          File.mkdir_p!(segment_dir)
+
+          File.write!(
+            Path.join(segment_dir, "stream_#{track}_#{"#{i}" |> String.pad_leading(5, "0")}.ts"),
+            "fake_segment_data_#{track}_#{i}"
+          )
+        end
+      end
+
+      {:ok, packager} =
+        Packager.start_link(
+          storage: storage,
+          manifest_uri: manifest_uri,
+          resume_finished_tracks: true
+        )
+
+      tracks = Packager.tracks(packager)
+      t1 = tracks["track1"]
+      t2 = tracks["track2"]
+
+      assert t1.media_playlist.media_sequence_number == 0
+      assert t2.media_playlist.media_sequence_number == 0
+
+      assert Enum.map(t1.media_playlist.segments, &to_string(&1.uri)) == [
+               "stream_track1/00000/stream_track1_00001.ts",
+               "stream_track1/00000/stream_track1_00002.ts",
+               "stream_track1/00000/stream_track1_00003.ts"
+             ]
+
+      assert Enum.map(t2.media_playlist.segments, &to_string(&1.uri)) == [
+               "stream_track2/00000/stream_track2_00001.ts",
+               "stream_track2/00000/stream_track2_00002.ts",
+               "stream_track2/00000/stream_track2_00003.ts"
+             ]
+
+      assert t1.segment_count == 3
+      assert t2.segment_count == 3
+      assert t1.duration == t2.duration
+    end
+
     test "removes extra segments ahead, remove old and aligns media sequence number", %{
       storage: storage,
       manifest_uri: manifest_uri,

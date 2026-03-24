@@ -994,8 +994,6 @@ defmodule HLS.Packager do
   end
 
   defp fix_tracks(tracks, storage, master, opts) do
-    max_segments = opts[:max_segments]
-
     all_synced? =
       tracks
       |> Enum.map(fn {_id, t} -> {t.media_playlist.media_sequence_number, t.segment_count} end)
@@ -1005,12 +1003,7 @@ defmodule HLS.Packager do
     if all_synced? do
       tracks
     else
-      # Only fix tracks for sliding window livestreams (max_segments != nil)
-      if max_segments != nil do
-        fix_out_of_sync_tracks(tracks, storage, master, opts)
-      else
-        tracks
-      end
+      fix_out_of_sync_tracks(tracks, storage, master, opts)
     end
   end
 
