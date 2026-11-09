@@ -209,6 +209,46 @@ defmodule HLS.PackagerTest do
     end)
   end
 
+  defp add_sliding_window_tracks(state, track_ids) do
+    Enum.reduce(track_ids, state, fn id, s ->
+      {s, []} =
+        Packager.add_track(s, id,
+          stream: %VariantStream{bandwidth: 1_000_000, codecs: ["avc1.64001e"]},
+          segment_extension: ".ts",
+          target_segment_duration: 6.0
+        )
+
+      s
+    end)
+  end
+
+  defp run_live_syncs(state, storage, manifest_uri, track_ids, first_sync_point, ticks) do
+    {state, _next} =
+      Enum.reduce(1..ticks, {state, first_sync_point}, fn _tick, {s, sync_point} ->
+        s =
+          Enum.reduce(track_ids, s, fn id, acc ->
+            add_segments(acc, storage, manifest_uri, id, 1, 6.0)
+          end)
+
+        assert {s, actions} = Packager.sync(s, sync_point)
+        ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+        for id <- track_ids do
+          track = s.tracks[id]
+
+          assert track.media_playlist.media_sequence_number +
+                   length(track.media_playlist.segments) == sync_point
+
+          assert length(track.media_playlist.segments) <= 3
+          assert length(track.pending_playlist.segments) == 3
+        end
+
+        {s, max(sync_point + 1, Packager.next_sync_point(s))}
+      end)
+
+    state
+  end
+
   # Test setup
   setup do
     {:ok, storage} = TestStorage.start_link()
@@ -972,7 +1012,7 @@ defmodule HLS.PackagerTest do
       state = %{state | pending_discontinuities: [disc1, disc2]}
 
       state = add_segments(state, storage, manifest_uri, "test_track", 2, 1.0)
-      {state, actions} = Packager.sync(state, 4)
+      {state, actions} = Packager.sync(state, 5)
       ActionExecutor.execute_actions(actions, storage, manifest_uri)
 
       track = state.tracks["test_track"]
@@ -1083,6 +1123,98 @@ defmodule HLS.PackagerTest do
 
       assert length(segments_with_datetime) == length(playlist.segments),
              "All segments should have program_date_time when enabled"
+    end
+
+    test "next_sync_point and sync_ready? count segments removed by the window", %{
+      manifest_uri: manifest_uri,
+      storage: storage
+    } do
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri, max_segments: 3)
+      state = add_sliding_window_tracks(state, ["video"])
+
+      state = add_segments(state, storage, manifest_uri, "video", 5, 6.0)
+      {state, actions} = Packager.sync(state, 5)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      assert state.tracks["video"].media_playlist.media_sequence_number == 2
+      assert Packager.next_sync_point(state) == 6
+      assert Packager.sync_ready?(state, 6) == {false, ["video"]}
+
+      state = add_segments(state, storage, manifest_uri, "video", 1, 6.0)
+      assert Packager.sync_ready?(state, 6) == {true, []}
+    end
+
+    test "publishes one segment per live sync after the window is full", %{
+      manifest_uri: manifest_uri,
+      storage: storage
+    } do
+      track_ids = ["video_a", "video_b"]
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri, max_segments: 3)
+      state = add_sliding_window_tracks(state, track_ids)
+
+      state =
+        Enum.reduce(track_ids, state, fn id, s ->
+          add_segments(s, storage, manifest_uri, id, 3, 6.0)
+        end)
+
+      state =
+        run_live_syncs(
+          state,
+          storage,
+          manifest_uri,
+          track_ids,
+          Packager.next_sync_point(state),
+          10
+        )
+
+      playlist =
+        load_media_playlist(storage, manifest_uri, state.tracks["video_a"].media_playlist.uri)
+
+      assert length(playlist.segments) == 3
+      assert playlist.media_sequence_number == 7
+      assert playlist.segments |> List.last() |> Map.fetch!(:uri) |> to_string() =~ "00010"
+    end
+
+    test "resumed full window keeps publishing one segment per live sync", %{
+      manifest_uri: manifest_uri,
+      storage: storage
+    } do
+      track_ids = ["video_a", "video_b"]
+      {:ok, state} = Packager.new(manifest_uri: manifest_uri, max_segments: 3)
+      state = add_sliding_window_tracks(state, track_ids)
+
+      state =
+        Enum.reduce(track_ids, state, fn id, s ->
+          add_segments(s, storage, manifest_uri, id, 5, 6.0)
+        end)
+
+      {state, actions} = Packager.sync(state, 5)
+      ActionExecutor.execute_actions(actions, storage, manifest_uri)
+
+      master =
+        HLS.Playlist.unmarshal(load_master_content(storage, manifest_uri), %Master{
+          uri: manifest_uri
+        })
+
+      media_playlists = state.tracks |> Map.values() |> Enum.map(& &1.media_playlist)
+
+      {:ok, resumed} =
+        Packager.resume(
+          master_playlist: master,
+          media_playlists: media_playlists,
+          max_segments: 3
+        )
+
+      assert Packager.next_sync_point(resumed) == 6
+
+      resumed =
+        Enum.reduce(track_ids, resumed, fn id, s ->
+          add_segments(s, storage, manifest_uri, id, 3, 6.0)
+        end)
+
+      resumed = run_live_syncs(resumed, storage, manifest_uri, track_ids, 6, 5)
+
+      assert resumed.tracks["video_a"].media_playlist.media_sequence_number == 7
     end
   end
 

@@ -792,7 +792,7 @@ defmodule HLS.Packager do
   def skip_sync_point(state, sync_point) when sync_point > 0 do
     passed_tracks =
       state.tracks
-      |> Enum.filter(fn {_id, track} -> length(track.media_playlist.segments) >= sync_point end)
+      |> Enum.filter(fn {_id, track} -> media_segment_count(track) >= sync_point end)
       |> Enum.map(&elem(&1, 0))
 
     if passed_tracks != [] do
@@ -862,7 +862,7 @@ defmodule HLS.Packager do
   end
 
   defp drop_track_segment_at_sync_point(track, sync_point) do
-    media_count = length(track.media_playlist.segments)
+    media_count = media_segment_count(track)
     pending_playlist_count = length(track.pending_playlist.segments)
     relative_index = sync_point - media_count - 1
 
@@ -903,7 +903,7 @@ defmodule HLS.Packager do
   end
 
   defp apply_discontinuity_to_track_segment(track, discontinuity, apply_sync_point) do
-    media_count = length(track.media_playlist.segments)
+    media_count = media_segment_count(track)
     pending_playlist_count = length(track.pending_playlist.segments)
     relative_index = apply_sync_point - media_count - 1
 
@@ -1013,15 +1013,15 @@ defmodule HLS.Packager do
   @doc """
   Returns the next synchronization point.
 
-  This is the maximum segment count across all tracks plus one.
+  This is the maximum segment count across all tracks plus one. Segments that
+  the sliding window already removed from the media playlist are included, so
+  sync points keep growing once the window is full.
   """
   @spec next_sync_point(t()) :: pos_integer()
   def next_sync_point(state) do
     max_segments =
       state.tracks
-      |> Enum.map(fn {_id, track} ->
-        length(track.media_playlist.segments)
-      end)
+      |> Enum.map(fn {_id, track} -> media_segment_count(track) end)
       |> Enum.max(fn -> 0 end)
 
     max_segments + 1
@@ -1040,10 +1040,7 @@ defmodule HLS.Packager do
       state.tracks
       |> Enum.filter(fn {id, track} -> track_filter.(id, track) end)
       |> Enum.reduce([], fn {id, track}, acc ->
-        available =
-          length(track.pending_playlist.segments) + length(track.media_playlist.segments)
-
-        if available < sync_point, do: [id | acc], else: acc
+        if available_segment_count(track) < sync_point, do: [id | acc], else: acc
       end)
       |> Enum.reverse()
 
@@ -1090,7 +1087,7 @@ defmodule HLS.Packager do
   end
 
   defp sync_track(state, track, track_id, sync_point) do
-    current_count = length(track.media_playlist.segments)
+    current_count = media_segment_count(track)
 
     {moved_segments, remaining_segments, moved_duration} =
       split_segments_at_sync_point(track.pending_playlist.segments, sync_point, current_count)
@@ -1505,8 +1502,7 @@ defmodule HLS.Packager do
     warnings =
       mandatory_tracks
       |> Enum.flat_map(fn {id, track} ->
-        available =
-          length(track.pending_playlist.segments) + length(track.media_playlist.segments)
+        available = available_segment_count(track)
 
         if available < sync_point do
           [
@@ -1602,8 +1598,21 @@ defmodule HLS.Packager do
   end
 
   defp segment_at_sync_point(track, sync_point) do
-    segments = track.media_playlist.segments ++ track.pending_playlist.segments
-    Enum.at(segments, sync_point - 1)
+    index = sync_point - track.media_playlist.media_sequence_number - 1
+
+    if index < 0 do
+      nil
+    else
+      Enum.at(track.media_playlist.segments ++ track.pending_playlist.segments, index)
+    end
+  end
+
+  defp media_segment_count(track) do
+    track.media_playlist.media_sequence_number + length(track.media_playlist.segments)
+  end
+
+  defp available_segment_count(track) do
+    media_segment_count(track) + length(track.pending_playlist.segments)
   end
 
   defp skip_sync_point_for_track(state, track_id, sync_point) do
@@ -1664,7 +1673,7 @@ defmodule HLS.Packager do
     else
       passed_tracks =
         state.tracks
-        |> Enum.filter(fn {_id, track} -> length(track.media_playlist.segments) >= sync_point end)
+        |> Enum.filter(fn {_id, track} -> media_segment_count(track) >= sync_point end)
         |> Enum.map(&elem(&1, 0))
 
       if passed_tracks != [] do
